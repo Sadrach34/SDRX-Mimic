@@ -1,0 +1,7 @@
+name        = "hola-mundo"
+version     = "0.1.0"
+author      = "SDRX"
+description = "Extensión de prueba — muestra mensaje al abrir o crear una nota"
+language    = "lua"
+enabled     = false
+permissions = ["hooks.open", "hooks.save", "commands"]
