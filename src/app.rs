@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::DefaultTerminal;
 use tui_textarea::TextArea;
 
@@ -21,22 +22,33 @@ use crate::{
     vault::{links, Note, Vault},
 };
 
+fn rect_contains(area: Option<Rect>, x: u16, y: u16) -> bool {
+    area.map(|a| x >= a.x && x < a.x + a.width && y >= a.y && y < a.y + a.height)
+        .unwrap_or(false)
+}
+
 pub struct Tab {
     pub note: Note,
     pub editor: TextArea<'static>,
     pub scroll_preview: u16,
+    /// Vertical scroll (in wrapped display rows) for the manual word-wrap
+    /// renderer used in Insert mode — see `ui::wrap::wrap_editor_lines`.
+    pub editor_scroll: u16,
 }
 
 impl Tab {
     pub fn new(note: Note) -> Self {
         let content = note.content.clone();
-        // tui-textarea 0.7 no soporta word wrap — limitación del widget
+        // tui-textarea 0.7 no soporta word wrap nativo — el wrap visual se
+        // hace a mano al renderizar (ver render_textarea/wrap_editor_lines);
+        // el modelo de datos aquí sigue siendo línea lógica = String.
         let mut editor = TextArea::from(content.lines().map(String::from).collect::<Vec<_>>());
         editor.set_line_number_style(ratatui::style::Style::default());
         Self {
             note,
             editor,
             scroll_preview: 0,
+            editor_scroll: 0,
         }
     }
 
@@ -49,13 +61,32 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ExtScope {
+    Global,
+    Vault,
+}
+
+/// Which pane currently owns keyboard/mouse interaction. Mirrors mditor's
+/// container model: each pane keeps its own state (scroll, selection) and
+/// Tab/Shift+Tab cycles which one is "live" instead of interactions
+/// leaking across panes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Sidebar,
+    Editor,
+    Preview,
+}
+
+
 pub struct WarningDialog {
     pub ext_name: String,
     pub ext_version: String,
     pub ext_author: String,
     pub permissions: Vec<String>,
     pub is_enable: bool,   // true=toggle enable, false=install
-    pub ext_idx: Option<usize>, // index in extension_manager.extensions (for enable)
+    pub ext_idx: Option<usize>, // index in the target manager's extensions (for enable)
+    pub scope: ExtScope,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -65,6 +96,8 @@ pub struct PreviewCopyHit {
     pub y: u16,
     pub text: String,
 }
+
+pub use crate::ui::tabs::TabRect;
 
 pub struct App {
     pub vault: Option<Vault>,
@@ -85,10 +118,30 @@ pub struct App {
     pub last_vault_refresh: Instant,
     pub should_quit: bool,
     pub extension_manager: ExtensionManager,
+    pub vault_extension_manager: Option<ExtensionManager>,
     pub settings_tab: SettingsTab,
     pub ext_selected: usize,
     pub warning_dialog: Option<WarningDialog>,
     pub preview_copy_hits: Vec<PreviewCopyHit>,
+    pub preview_area: Option<Rect>,
+    pub tab_hits: Vec<TabRect>,
+    pub image_cache: std::collections::HashMap<(PathBuf, u16, u16), Option<crate::ui::images::PreparedImage>>,
+    /// Raw decoded images (no cols/rows fitting yet), cached separately so
+    /// we can read real pixel dimensions — needed to fit the display box to
+    /// the image's aspect ratio — without re-decoding every frame.
+    pub decoded_image_cache: std::collections::HashMap<PathBuf, Option<image::DynamicImage>>,
+    pub pending_kitty_draws: Vec<(u16, u16, Vec<u8>)>,
+    pub focus: Focus,
+    pub sidebar_area: Option<Rect>,
+    pub editor_area: Option<Rect>,
+    pub web_images: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, WebImageStatus>>>,
+}
+
+/// State of a background HTTP(S) image fetch, keyed by URL in `App::web_images`.
+pub enum WebImageStatus {
+    Loading,
+    Ready(image::DynamicImage),
+    Failed,
 }
 
 impl App {
@@ -125,19 +178,67 @@ impl App {
             last_vault_refresh: Instant::now(),
             should_quit: false,
             extension_manager,
+            vault_extension_manager: None,
             settings_tab: SettingsTab::Extensions,
             ext_selected: 0,
             warning_dialog: None,
             preview_copy_hits: Vec::new(),
+            preview_area: None,
+            tab_hits: Vec::new(),
+            image_cache: std::collections::HashMap::new(),
+            decoded_image_cache: std::collections::HashMap::new(),
+            pending_kitty_draws: Vec::new(),
+            focus: Focus::Editor,
+            sidebar_area: None,
+            editor_area: None,
+            web_images: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
+    }
+
+    /// Cycles focus forward through the panes that are actually visible in
+    /// the current view mode, so Tab never lands on a hidden pane.
+    pub fn focus_next(&mut self) {
+        let order = self.visible_panes();
+        if order.is_empty() {
+            return;
+        }
+        let pos = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[(pos + 1) % order.len()];
+    }
+
+    pub fn focus_prev(&mut self) {
+        let order = self.visible_panes();
+        if order.is_empty() {
+            return;
+        }
+        let pos = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[(pos + order.len() - 1) % order.len()];
+    }
+
+    fn visible_panes(&self) -> Vec<Focus> {
+        let mut panes = vec![Focus::Sidebar];
+        match self.view_mode {
+            ViewMode::Editor => panes.push(Focus::Editor),
+            ViewMode::Preview => panes.push(Focus::Preview),
+            ViewMode::Split => {
+                panes.push(Focus::Editor);
+                panes.push(Focus::Preview);
+            }
+        }
+        panes
     }
 
     pub fn new_with_vault(vault_path: &Path, config: Config) -> std::io::Result<Self> {
         let vault = Vault::open(vault_path)?;
         let mut app = Self::new_at_home(config);
+        let mut vault_extension_manager = ExtensionManager::new_for_vault(vault_path);
+        vault_extension_manager.load_all();
+        app.vault_extension_manager = Some(vault_extension_manager);
         app.vault = Some(vault);
         app.app_mode = AppMode::Normal;
         app.new_vault_dialog = None;
+        let path_str = vault_path.to_string_lossy().to_string();
+        app.fire_hook(HookEvent::VaultOpen { path: path_str });
         Ok(app)
     }
 
@@ -152,8 +253,12 @@ impl App {
                 self.active_tab = 0;
                 self.config.settings.vault.add_recent(path_str);
                 self.config.save();
+                let mut vault_extension_manager = ExtensionManager::new_for_vault(&path);
+                vault_extension_manager.load_all();
+                self.vault_extension_manager = Some(vault_extension_manager);
                 self.vault = Some(v);
                 self.app_mode = AppMode::Normal;
+                self.fire_hook(HookEvent::VaultOpen { path: path_str.to_string() });
             }
             Err(e) => {
                 self.set_status(format!("Error abriendo vault: {}", e));
@@ -184,6 +289,20 @@ impl App {
         }
         self.tabs.remove(self.active_tab);
         if self.active_tab >= self.tabs.len() && !self.tabs.is_empty() {
+            self.active_tab = self.tabs.len() - 1;
+        }
+    }
+
+    pub fn close_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(idx);
+        if self.tabs.is_empty() {
+            self.active_tab = 0;
+        } else if self.active_tab > idx {
+            self.active_tab -= 1;
+        } else if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
     }
@@ -367,9 +486,39 @@ impl App {
         }
     }
 
+    /// Traduce el índice "aplanado" de la lista de extensiones en la UI
+    /// (global primero, vault después) a (es_vault, índice local).
+    fn resolve_ext_selection(&self) -> Option<(bool, usize)> {
+        let global_len = self.extension_manager.extensions.len();
+        if self.ext_selected < global_len {
+            Some((false, self.ext_selected))
+        } else if let Some(vm) = &self.vault_extension_manager {
+            let local = self.ext_selected - global_len;
+            if local < vm.extensions.len() {
+                Some((true, local))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    fn ext_manager_mut(&mut self, is_vault: bool) -> Option<&mut ExtensionManager> {
+        if is_vault {
+            self.vault_extension_manager.as_mut()
+        } else {
+            Some(&mut self.extension_manager)
+        }
+    }
+
     pub fn fire_hook(&mut self, event: HookEvent) {
         let _results = self.extension_manager.fire_hook(&event);
-        let notifs = self.extension_manager.drain_notifications();
+        let mut notifs = self.extension_manager.drain_notifications();
+        if let Some(vm) = &mut self.vault_extension_manager {
+            let _vault_results = vm.fire_hook(&event);
+            notifs.extend(vm.drain_notifications());
+        }
         for n in notifs {
             self.set_status(n);
         }
@@ -395,6 +544,7 @@ impl App {
             self.autosave_if_needed();
             self.refresh_vault_if_needed();
             terminal.draw(|frame| render(frame, &mut self))?;
+            self.flush_kitty_draws()?;
 
             if self.should_quit {
                 break;
@@ -411,12 +561,105 @@ impl App {
         Ok(())
     }
 
+    /// Writes any kitty-graphics escape sequences queued during the last
+    /// `render()` pass directly to stdout, bypassing ratatui's buffer diff
+    /// (which would otherwise mangle the raw APC bytes).
+    fn flush_kitty_draws(&mut self) -> std::io::Result<()> {
+        if self.pending_kitty_draws.is_empty() {
+            return Ok(());
+        }
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        for (x, y, bytes) in self.pending_kitty_draws.drain(..) {
+            crossterm::queue!(stdout, crossterm::cursor::MoveTo(x, y))?;
+            stdout.write_all(&bytes)?;
+        }
+        stdout.flush()?;
+        Ok(())
+    }
+
     fn handle_mouse(&mut self, mouse: MouseEvent) {
         if !matches!(self.app_mode, AppMode::Normal | AppMode::Insert) {
             return;
         }
+
+        if matches!(mouse.kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
+            let over_preview = rect_contains(self.preview_area, mouse.column, mouse.row);
+            let over_sidebar = rect_contains(self.sidebar_area, mouse.column, mouse.row);
+            if over_preview {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    match mouse.kind {
+                        MouseEventKind::ScrollDown => {
+                            tab.scroll_preview = tab.scroll_preview.saturating_add(3);
+                        }
+                        MouseEventKind::ScrollUp => {
+                            tab.scroll_preview = tab.scroll_preview.saturating_sub(3);
+                        }
+                        _ => {}
+                    }
+                }
+            } else if over_sidebar {
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.sidebar_scroll = self.sidebar_scroll.saturating_add(3);
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.sidebar_scroll = self.sidebar_scroll.saturating_sub(3);
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             return;
+        }
+
+        if let Some((idx, close_x_start)) = self
+            .tab_hits
+            .iter()
+            .enumerate()
+            .find(|(_, r)| mouse.row == r.y && mouse.column >= r.x_start && mouse.column < r.close_x_end)
+            .map(|(idx, r)| (idx, r.close_x_start))
+        {
+            if mouse.column >= close_x_start {
+                self.close_tab(idx);
+            } else {
+                self.active_tab = idx;
+            }
+            return;
+        }
+
+        if rect_contains(self.sidebar_area, mouse.column, mouse.row) {
+            self.focus = Focus::Sidebar;
+            if let Some(area) = self.sidebar_area {
+                let row_idx = (mouse.row - area.y) as usize + self.sidebar_scroll;
+                let entry = self.vault.as_ref().and_then(|v| {
+                    let vis = v.tree.visible_indices();
+                    vis.get(row_idx).map(|&idx| (idx, v.tree.entries[idx].is_dir, v.tree.entries[idx].path.clone()))
+                });
+                if let Some((idx, is_dir, path)) = entry {
+                    if let Some(v) = &mut self.vault {
+                        v.tree.selected = idx;
+                    }
+                    if is_dir {
+                        if let Some(v) = &mut self.vault {
+                            v.tree.toggle_dir();
+                        }
+                    } else {
+                        self.open_note(&path);
+                        self.focus = Focus::Editor;
+                    }
+                }
+            }
+            return;
+        }
+
+        if rect_contains(self.preview_area, mouse.column, mouse.row) {
+            self.focus = Focus::Preview;
+        } else if rect_contains(self.editor_area, mouse.column, mouse.row) {
+            self.focus = Focus::Editor;
         }
 
         if let Some(hit) = self.preview_copy_hits.iter().find(|hit| {
@@ -667,6 +910,16 @@ impl App {
                 self.view_mode = self.view_mode.next();
                 self.config.settings.view_mode = self.view_mode.clone();
                 self.config.save();
+                // Editor-only/Preview-only modes only have one content pane,
+                // so focus must follow it — otherwise it stays pointed at a
+                // pane that's no longer even on screen. Split has both, so
+                // whatever was focused (from before, or just snapped above)
+                // is still valid and is left alone.
+                match self.view_mode {
+                    ViewMode::Editor => self.focus = Focus::Editor,
+                    ViewMode::Preview => self.focus = Focus::Preview,
+                    ViewMode::Split => {}
+                }
             }
             (KeyModifiers::NONE, KeyCode::Char('i')) => {
                 if self.view_mode != ViewMode::Preview {
@@ -680,8 +933,20 @@ impl App {
                 self.app_mode = AppMode::Command;
                 self.command_buffer.clear();
             }
-            (KeyModifiers::NONE, KeyCode::Tab) => self.next_tab(),
-            (KeyModifiers::SHIFT, KeyCode::BackTab) => self.prev_tab(),
+            (KeyModifiers::ALT, KeyCode::Right) => self.next_tab(),
+            (KeyModifiers::ALT, KeyCode::Left) => self.prev_tab(),
+            (KeyModifiers::NONE, KeyCode::Tab) => self.focus_next(),
+            (KeyModifiers::SHIFT, KeyCode::BackTab) => self.focus_prev(),
+            (KeyModifiers::NONE, KeyCode::Down) if self.focus == Focus::Preview => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.scroll_preview = tab.scroll_preview.saturating_add(3);
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Up) if self.focus == Focus::Preview => {
+                if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                    tab.scroll_preview = tab.scroll_preview.saturating_sub(3);
+                }
+            }
             (KeyModifiers::NONE, KeyCode::Char('j')) | (KeyModifiers::NONE, KeyCode::Down) => {
                 if let Some(v) = &mut self.vault {
                     v.tree.move_down();
@@ -781,6 +1046,33 @@ impl App {
                     match copy_to_clipboard(&text) {
                         Ok(_) => self.set_status(format!("Copiado ({} chars)", text.len())),
                         Err(e) => self.set_status(format!("Error clipboard: {}", e)),
+                    }
+                }
+            }
+            return;
+        }
+
+        // Ctrl+V → pegar. Portapapeles del sistema (wl-paste/xclip, útil con
+        // `ssh -X`) primero; si no hay servidor gráfico remoto (SSH normal
+        // sin forwarding), cae al buffer interno del editor — lo último
+        // cortado/copiado dentro de Mimic con Ctrl+C/Ctrl+X sigue pegable.
+        if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('v') {
+            match paste_from_clipboard() {
+                Ok(text) if !text.is_empty() => {
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                        tab.editor.insert_str(&text);
+                        tab.note.dirty = true;
+                        self.last_edit_time = Some(Instant::now());
+                    }
+                }
+                _ => {
+                    if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+                        if tab.editor.paste() {
+                            tab.note.dirty = true;
+                            self.last_edit_time = Some(Instant::now());
+                        } else {
+                            self.set_status("Portapapeles vacío".into());
+                        }
                     }
                 }
             }
@@ -1018,12 +1310,29 @@ impl App {
                 );
             }
             // Extension commands: :ext install <path>, :ext remove <name>, :ext list, :ext enable/disable <name>
+            // Sufijo opcional --vault para operar sobre el scope de vault en vez del global.
             ["ext", rest] => {
-                let rest = rest.trim();
-                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                let raw = rest.trim();
+                let want_vault = raw.split_whitespace().any(|t| t == "--vault");
+                let cleaned: String = raw
+                    .split_whitespace()
+                    .filter(|t| *t != "--vault")
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if want_vault && self.vault_extension_manager.is_none() {
+                    self.set_status("No hay vault abierto, se usa scope global.".into());
+                }
+                let use_vault = want_vault && self.vault_extension_manager.is_some();
+                let scope = if use_vault { ExtScope::Vault } else { ExtScope::Global };
+                let mgr: &mut ExtensionManager = if use_vault {
+                    self.vault_extension_manager.as_mut().unwrap()
+                } else {
+                    &mut self.extension_manager
+                };
+                let parts: Vec<&str> = cleaned.splitn(2, ' ').collect();
                 match parts.as_slice() {
                     ["list"] => {
-                        let names: Vec<String> = self.extension_manager.extensions.iter()
+                        let names: Vec<String> = mgr.extensions.iter()
                             .map(|e| format!("{}({})", e.manifest.name, if e.manifest.enabled { "on" } else { "off" }))
                             .collect();
                         if names.is_empty() {
@@ -1043,9 +1352,10 @@ impl App {
                                     permissions: manifest.permissions.clone(),
                                     is_enable: false,
                                     ext_idx: None,
+                                    scope,
                                 };
                                 // Perform install then show warning (install disabled by default)
-                                match self.extension_manager.install_from(&src) {
+                                match mgr.install_from(&src) {
                                     Ok(name) => {
                                         self.warning_dialog = Some(wd);
                                         self.set_status(format!("'{}' instalada (desactivada). Activa en Configuración (Ctrl+T).", name));
@@ -1058,16 +1368,16 @@ impl App {
                     }
                     ["remove", name] => {
                         let name = name.trim().to_string();
-                        match self.extension_manager.remove(&name) {
+                        match mgr.remove(&name) {
                             Ok(_) => self.set_status(format!("Extensión '{}' eliminada.", name)),
                             Err(e) => self.set_status(format!("Error: {}", e)),
                         }
                     }
                     ["enable", name] => {
                         let name = name.trim();
-                        if let Some(idx) = self.extension_manager.extensions.iter().position(|e| e.manifest.name == name) {
+                        if let Some(idx) = mgr.extensions.iter().position(|e| e.manifest.name == name) {
                             let wd = {
-                                let e = &self.extension_manager.extensions[idx];
+                                let e = &mgr.extensions[idx];
                                 WarningDialog {
                                     ext_name: e.manifest.name.clone(),
                                     ext_version: e.manifest.version.clone(),
@@ -1075,6 +1385,7 @@ impl App {
                                     permissions: e.manifest.permissions.clone(),
                                     is_enable: true,
                                     ext_idx: Some(idx),
+                                    scope,
                                 }
                             };
                             self.warning_dialog = Some(wd);
@@ -1084,14 +1395,14 @@ impl App {
                     }
                     ["disable", name] => {
                         let name = name.trim().to_string();
-                        if let Some(idx) = self.extension_manager.extensions.iter().position(|e| e.manifest.name == name) {
-                            self.extension_manager.disable(idx);
+                        if let Some(idx) = mgr.extensions.iter().position(|e| e.manifest.name == name) {
+                            mgr.disable(idx);
                             self.set_status(format!("Extensión '{}' desactivada.", name));
                         } else {
                             self.set_status(format!("Extensión '{}' no encontrada.", name));
                         }
                     }
-                    _ => self.set_status("Uso: :ext list|install <ruta>|remove <nom>|enable <nom>|disable <nom>".into()),
+                    _ => self.set_status("Uso: :ext list|install <ruta>|remove <nom>|enable <nom>|disable <nom> [--vault]".into()),
                 }
             }
             _ => {
@@ -1106,7 +1417,11 @@ impl App {
                     }
                 };
                 let args: Vec<String> = args_str.split_whitespace().map(String::from).collect();
-                if let Some(result) = self.extension_manager.dispatch_command(cmd_name, &args) {
+                // Vault-scoped extensions pueden sobrescribir comandos globales del mismo nombre.
+                let vault_result = self.vault_extension_manager.as_mut()
+                    .and_then(|vm| vm.dispatch_command(cmd_name, &args));
+                let result = vault_result.or_else(|| self.extension_manager.dispatch_command(cmd_name, &args));
+                if let Some(result) = result {
                     self.set_status(result);
                 } else {
                     self.set_status(format!("Comando desconocido: {}", cmd));
@@ -1119,14 +1434,19 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(wd) = self.warning_dialog.take() {
+                    let is_vault = wd.scope == ExtScope::Vault;
                     if wd.is_enable {
                         if let Some(idx) = wd.ext_idx {
-                            self.extension_manager.enable(idx);
-                            self.set_status(format!("Extensión '{}' activada", wd.ext_name));
+                            if let Some(mgr) = self.ext_manager_mut(is_vault) {
+                                mgr.enable(idx);
+                                self.set_status(format!("Extensión '{}' activada", wd.ext_name));
+                            }
                         }
                     }
                     // install was already done before showing dialog; just reload
-                    self.extension_manager.load_all();
+                    if let Some(mgr) = self.ext_manager_mut(is_vault) {
+                        mgr.load_all();
+                    }
                 }
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
@@ -1153,8 +1473,9 @@ impl App {
             return;
         }
 
-        // Extensions tab
-        let ext_count = self.extension_manager.extensions.len();
+        // Extensions tab — lista aplanada: global primero, luego vault
+        let ext_count = self.extension_manager.extensions.len()
+            + self.vault_extension_manager.as_ref().map_or(0, |vm| vm.extensions.len());
         match key.code {
             KeyCode::Esc => { self.app_mode = AppMode::Normal; }
             KeyCode::Tab => { self.settings_tab = SettingsTab::Themes; }
@@ -1170,35 +1491,44 @@ impl App {
                 }
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
-                if let Some(entry) = self.extension_manager.extensions.get(self.ext_selected) {
-                    let wd = WarningDialog {
-                        ext_name: entry.manifest.name.clone(),
-                        ext_version: entry.manifest.version.clone(),
-                        ext_author: entry.manifest.author.clone(),
-                        permissions: entry.manifest.permissions.clone(),
-                        is_enable: true,
-                        ext_idx: Some(self.ext_selected),
-                    };
-                    if entry.manifest.enabled {
-                        // Disable immediately without dialog
-                        let idx = self.ext_selected;
-                        let name = entry.manifest.name.clone();
-                        self.extension_manager.disable(idx);
-                        self.set_status(format!("Extensión '{}' desactivada", name));
-                    } else {
-                        self.warning_dialog = Some(wd);
+                if let Some((is_vault, idx)) = self.resolve_ext_selection() {
+                    let scope = if is_vault { ExtScope::Vault } else { ExtScope::Global };
+                    if let Some(mgr) = self.ext_manager_mut(is_vault) {
+                        if let Some(entry) = mgr.extensions.get(idx) {
+                            if entry.manifest.enabled {
+                                // Disable immediately without dialog
+                                let name = entry.manifest.name.clone();
+                                mgr.disable(idx);
+                                self.set_status(format!("Extensión '{}' desactivada", name));
+                            } else {
+                                let wd = WarningDialog {
+                                    ext_name: entry.manifest.name.clone(),
+                                    ext_version: entry.manifest.version.clone(),
+                                    ext_author: entry.manifest.author.clone(),
+                                    permissions: entry.manifest.permissions.clone(),
+                                    is_enable: true,
+                                    ext_idx: Some(idx),
+                                    scope,
+                                };
+                                self.warning_dialog = Some(wd);
+                            }
+                        }
                     }
                 }
             }
             KeyCode::Delete => {
-                if let Some(entry) = self.extension_manager.extensions.get(self.ext_selected) {
-                    let name = entry.manifest.name.clone();
-                    match self.extension_manager.remove(&name) {
-                        Ok(_) => {
-                            if self.ext_selected > 0 { self.ext_selected -= 1; }
-                            self.set_status(format!("Extensión '{}' eliminada", name));
+                if let Some((is_vault, idx)) = self.resolve_ext_selection() {
+                    if let Some(mgr) = self.ext_manager_mut(is_vault) {
+                        if let Some(entry) = mgr.extensions.get(idx) {
+                            let name = entry.manifest.name.clone();
+                            match mgr.remove(&name) {
+                                Ok(_) => {
+                                    if self.ext_selected > 0 { self.ext_selected -= 1; }
+                                    self.set_status(format!("Extensión '{}' eliminada", name));
+                                }
+                                Err(e) => self.set_status(format!("Error eliminando: {}", e)),
+                            }
                         }
-                        Err(e) => self.set_status(format!("Error eliminando: {}", e)),
                     }
                 }
             }
@@ -1383,19 +1713,56 @@ impl App {
         if !matches!(self.view_mode, ViewMode::Split | ViewMode::Preview) {
             return;
         }
+        let width = self.preview_area.map(|a| a.width as usize).unwrap_or(80);
+        let theme = self.config.theme.clone();
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-            let total = tab.editor.lines().len().max(1);
+            let raw_total = tab.editor.lines().len().max(1);
             let (cursor_row, _) = tab.editor.cursor();
-            let ratio = cursor_row as f32 / total as f32;
-            let target = (ratio * total as f32) as u16;
+
+            // Rendered markdown has more lines than raw source (headings get
+            // badge+rule+blank, code blocks get borders, images reserve a
+            // fixed box, long lines wrap) — scrolling by raw line count
+            // under-shoots and the cursor never reaches the true bottom.
+            let content = tab.editor.lines().join("\n");
+            let rendered_total = crate::ui::preview::render_markdown_with_targets(&content, width, &theme)
+                .lines
+                .len()
+                .max(1);
+
+            let ratio = cursor_row as f32 / raw_total as f32;
+            let target = (ratio * rendered_total as f32) as u16;
             tab.scroll_preview = target.saturating_sub(5);
         }
     }
 }
 
+/// Writes text to the *local* terminal's clipboard via OSC 52 — the escape
+/// sequence travels through the SSH pty itself, so this works over SSH with
+/// no display server on the remote end (supported by iTerm2, Kitty, WezTerm,
+/// Alacritty, Windows Terminal, and tmux with `set -g allow-passthrough on`).
+/// Best-effort: unsupported terminals just ignore the sequence, so failures
+/// here are silent rather than surfaced as an error.
+fn osc52_copy(text: &str) {
+    use base64::Engine;
+    use std::io::Write;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    let seq = if std::env::var_os("TMUX").is_some() {
+        // tmux swallows OSC escapes from the inner program unless wrapped in
+        // a DCS passthrough frame (and the embedded ESC doubled).
+        format!("\x1bPtmux;\x1b\x1b]52;c;{}\x07\x1b\\", b64)
+    } else {
+        format!("\x1b]52;c;{}\x07", b64)
+    };
+    let mut stdout = std::io::stdout();
+    let _ = stdout.write_all(seq.as_bytes());
+    let _ = stdout.flush();
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), &'static str> {
     use std::io::Write;
     use std::process::{Command, Stdio};
+
+    osc52_copy(text);
 
     let has_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
     let has_x11 = std::env::var("DISPLAY").is_ok();
@@ -1442,6 +1809,39 @@ fn copy_to_clipboard(text: &str) -> Result<(), &'static str> {
                 let _ = stdin.write_all(text.as_bytes());
             }
             return Ok(());
+        }
+    }
+
+    // No local wl-copy/xclip/xsel (e.g. a headless SSH session) — OSC 52
+    // above was still attempted, which is the path that actually matters
+    // there, so this isn't a hard failure.
+    Ok(())
+}
+
+fn paste_from_clipboard() -> Result<String, &'static str> {
+    use std::process::Command;
+
+    let has_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+    let has_x11 = std::env::var("DISPLAY").is_ok();
+
+    if has_wayland {
+        if let Ok(out) = Command::new("wl-paste").arg("--no-newline").output() {
+            if out.status.success() {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
+        }
+    }
+
+    if has_x11 {
+        if let Ok(out) = Command::new("xclip").args(["-selection", "clipboard", "-o"]).output() {
+            if out.status.success() {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
+        }
+        if let Ok(out) = Command::new("xsel").args(["--clipboard", "--output"]).output() {
+            if out.status.success() {
+                return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+            }
         }
     }
 

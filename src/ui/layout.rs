@@ -75,12 +75,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_hints(frame, app, main_chunks[3]);
 
     if app.app_mode == AppMode::Settings {
-        let exts = app.extension_manager.extensions.as_slice();
+        let mut scopes = vec![crate::ui::extension_list::ExtScopeView {
+            label: "Global",
+            extensions: app.extension_manager.extensions.as_slice(),
+        }];
+        if let Some(vm) = &app.vault_extension_manager {
+            scopes.push(crate::ui::extension_list::ExtScopeView {
+                label: "Vault",
+                extensions: vm.extensions.as_slice(),
+            });
+        }
         render_settings(
             frame,
             &app.config.theme,
             &app.settings_tab,
-            exts,
+            &scopes,
             app.ext_selected,
             &app.theme_editor,
             &app.config.user_themes,
@@ -101,9 +110,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
+fn render_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let names: Vec<&str> = app.tabs.iter().map(|t| t.note.name()).collect();
     let dirty: Vec<bool> = app.tabs.iter().map(|t| t.note.dirty).collect();
+
+    app.tab_hits = crate::ui::tabs::compute_tab_rects(
+        &names,
+        app.active_tab,
+        &dirty,
+        &app.config.theme,
+        area,
+    );
+
     let widget = TabBar {
         tab_names: names,
         active: app.active_tab,
@@ -122,14 +140,21 @@ fn render_content(frame: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
+    let sidebar_border = if app.focus == crate::app::Focus::Sidebar {
+        Theme::parse_color(&app.config.theme.accent)
+    } else {
+        Theme::parse_color(&app.config.theme.border)
+    };
     let sidebar_block = Block::default()
         .title(" VAULT ")
         .borders(Borders::RIGHT)
         .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(sidebar_border))
         .style(Style::default().bg(Theme::parse_color(&app.config.theme.sidebar_bg)));
 
     let sidebar_inner = sidebar_block.inner(content_chunks[0]);
     frame.render_widget(sidebar_block, content_chunks[0]);
+    app.sidebar_area = Some(sidebar_inner);
 
     if let Some(vault) = &app.vault {
         let sidebar_widget = Sidebar {
@@ -184,11 +209,16 @@ fn render_editor_area(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_textarea(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.editor_area = Some(area);
     let theme = &app.config.theme;
     let accent = Theme::parse_color(&theme.accent);
     let bg = Theme::parse_color(&theme.bg);
     let fg = Theme::parse_color(&theme.fg);
-    let border_color = Theme::parse_color(&theme.border);
+    let border_color = if app.focus == crate::app::Focus::Editor {
+        accent
+    } else {
+        Theme::parse_color(&theme.border)
+    };
 
     if let Some(tab) = app.tabs.get_mut(app.active_tab) {
         let header_color = Theme::parse_color(&theme.header);
@@ -202,10 +232,73 @@ fn render_textarea(frame: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().bg(bg));
 
         if app.app_mode == AppMode::Insert {
-            tab.editor.set_block(block);
-            tab.editor.set_style(Style::default().fg(fg).bg(bg));
-            tab.editor.set_cursor_style(Style::default().bg(accent));
-            frame.render_widget(&tab.editor, area);
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+
+            let logical_lines: Vec<String> = tab.editor.lines().to_vec();
+            let cursor = tab.editor.cursor();
+            let selection = tab.editor.selection_range();
+
+            let digits = logical_lines.len().max(1).to_string().len().max(2);
+            let gutter_width = digits as u16 + 1; // number + trailing space
+            let text_width = inner.width.saturating_sub(gutter_width) as usize;
+
+            let wrapped = crate::ui::wrap::wrap_editor_lines(&logical_lines, text_width, cursor, selection);
+            let border_dim = Theme::parse_color(&theme.border);
+            let sel_bg = Theme::parse_color(&theme.accent);
+
+            let visible = inner.height as usize;
+            if visible > 0 {
+                if wrapped.cursor_screen_row < tab.editor_scroll as usize {
+                    tab.editor_scroll = wrapped.cursor_screen_row as u16;
+                } else if wrapped.cursor_screen_row >= tab.editor_scroll as usize + visible {
+                    tab.editor_scroll = (wrapped.cursor_screen_row + 1 - visible) as u16;
+                }
+            }
+            let scroll = tab.editor_scroll as usize;
+
+            for (i, line) in wrapped.lines.iter().skip(scroll).take(visible).enumerate() {
+                let gutter_text = if line.is_first_segment {
+                    format!("{:>width$} ", line.logical_row + 1, width = digits)
+                } else {
+                    " ".repeat(digits + 1)
+                };
+                let mut spans = vec![Span::styled(gutter_text, Style::default().fg(border_dim).bg(bg))];
+                match line.highlight {
+                    Some((h_start, h_end)) => {
+                        let chars: Vec<char> = line.text.chars().collect();
+                        let before: String = chars[..h_start].iter().collect();
+                        let mid: String = chars[h_start..h_end].iter().collect();
+                        let after: String = chars[h_end..].iter().collect();
+                        if !before.is_empty() {
+                            spans.push(Span::styled(before, Style::default().fg(fg).bg(bg)));
+                        }
+                        spans.push(Span::styled(mid, Style::default().fg(bg).bg(sel_bg)));
+                        if !after.is_empty() {
+                            spans.push(Span::styled(after, Style::default().fg(fg).bg(bg)));
+                        }
+                    }
+                    None => {
+                        spans.push(Span::styled(line.text.clone(), Style::default().fg(fg).bg(bg)));
+                    }
+                }
+                let text_line = Line::from(spans);
+                frame.buffer_mut().set_line(inner.x, inner.y + i as u16, &text_line, inner.width);
+            }
+            let drawn = wrapped.lines.len().saturating_sub(scroll).min(visible);
+            for row in drawn..visible {
+                for x in inner.x..inner.right() {
+                    frame.buffer_mut()[(x, inner.y + row as u16)]
+                        .set_char(' ')
+                        .set_style(Style::default().bg(bg));
+                }
+            }
+
+            if wrapped.cursor_screen_row >= scroll && wrapped.cursor_screen_row < scroll + visible {
+                let cx = inner.x + gutter_width + wrapped.cursor_screen_col as u16;
+                let cy = inner.y + (wrapped.cursor_screen_row - scroll) as u16;
+                frame.set_cursor_position((cx, cy));
+            }
         } else {
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -220,7 +313,11 @@ fn render_textarea(frame: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.config.theme;
-    let border_color = Theme::parse_color(&theme.border);
+    let border_color = if app.focus == crate::app::Focus::Preview {
+        Theme::parse_color(&theme.accent)
+    } else {
+        Theme::parse_color(&theme.border)
+    };
     let bg = Theme::parse_color(&theme.bg);
 
     let header_color = Theme::parse_color(&theme.header);
@@ -235,6 +332,8 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    app.preview_area = Some(inner);
 
     if let Some(tab) = app.tabs.get(app.active_tab) {
         let content: String = tab.editor.lines().join("\n");
@@ -261,14 +360,137 @@ fn render_preview(frame: &mut Frame, app: &mut App, area: Rect) {
             });
         }
 
+        let note_dir = tab.note.path.parent().map(|p| p.to_path_buf());
+        let vault_root = app.vault.as_ref().map(|v| v.root.clone());
+        let scroll = tab.scroll_preview as usize;
+
         let preview = MarkdownPreview {
             content: &content,
             scroll: tab.scroll_preview,
             theme,
         };
         frame.render_widget(preview, inner);
+
+        blit_images(frame, app, &rendered.images, note_dir.as_deref(), vault_root.as_deref(), scroll, inner);
     } else {
         app.preview_copy_hits.clear();
+    }
+}
+
+/// Decodes/scales images referenced in the preview (cached per path+size)
+/// and paints them into the placeholder boxes left by the markdown
+/// renderer: half-block mosaic art always, plus a queued kitty-protocol
+/// escape overlay when the terminal supports it.
+fn blit_images(
+    frame: &mut Frame,
+    app: &mut App,
+    images: &[crate::ui::preview::ImageSpec],
+    note_dir: Option<&std::path::Path>,
+    vault_root: Option<&std::path::Path>,
+    scroll: usize,
+    inner: Rect,
+) {
+    for img in images {
+        if img.row < scroll {
+            continue;
+        }
+        let box_top_visible_row = img.row - scroll;
+        if box_top_visible_row >= inner.height as usize {
+            continue;
+        }
+        let is_web = img.path.starts_with("http://") || img.path.starts_with("https://");
+
+        let resolved = if is_web {
+            std::path::PathBuf::from(&img.path)
+        } else {
+            let p = std::path::Path::new(&img.path);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                // Wikilinks in this app resolve relative to the vault root
+                // (see links::resolve_link), so try that convention first
+                // and fall back to note-relative for notes kept outside a
+                // vault-root-anchored assets layout.
+                let vault_candidate = vault_root.map(|d| d.join(p));
+                match &vault_candidate {
+                    Some(c) if c.exists() => c.clone(),
+                    _ => match note_dir {
+                        Some(dir) => dir.join(p),
+                        None => vault_candidate.unwrap_or_else(|| p.to_path_buf()),
+                    },
+                }
+            }
+        };
+
+        let decoded = if is_web {
+            fetch_web_image(app, &img.path)
+        } else {
+            app.decoded_image_cache
+                .entry(resolved.clone())
+                .or_insert_with(|| crate::ui::images::load_image(&resolved))
+                .clone()
+        };
+        let Some(decoded) = decoded else { continue };
+
+        // Fit to the image's real aspect ratio instead of stretching it to
+        // fill the whole placeholder box, then center the result inside it.
+        let (fit_cols, fit_rows) =
+            crate::ui::images::fit_cells(decoded.width(), decoded.height(), img.inner_width, img.inner_height);
+        let off_cols = (img.inner_width.saturating_sub(fit_cols)) / 2;
+        let off_rows = (img.inner_height.saturating_sub(fit_rows)) / 2;
+
+        let key = (resolved, fit_cols, fit_rows);
+        let prepared = app
+            .image_cache
+            .entry(key)
+            .or_insert_with(|| Some(crate::ui::images::prepare_from_image(&decoded, fit_cols, fit_rows)))
+            .clone();
+        let Some(prepared) = prepared else { continue };
+
+        let screen_x = inner.x + img.col_start + off_cols;
+        let screen_y = inner.y + box_top_visible_row as u16 + off_rows;
+        let max_rows = (inner.height as usize).saturating_sub(box_top_visible_row + off_rows as usize);
+        let rows_to_draw = (fit_rows as usize).min(max_rows);
+
+        let buf = frame.buffer_mut();
+        for (i, line) in prepared.mosaic.iter().take(rows_to_draw).enumerate() {
+            buf.set_line(screen_x, screen_y + i as u16, line, fit_cols);
+        }
+
+        if let Some(bytes) = prepared.kitty_bytes {
+            if rows_to_draw == fit_rows as usize {
+                app.pending_kitty_draws.push((screen_x, screen_y, bytes));
+            }
+        }
+    }
+}
+
+/// Looks up a web image's decode state, kicking off a background download
+/// on first sight of a URL. Never blocks the render loop: while the fetch
+/// is in flight (or failed) this just returns `None`, leaving the markdown
+/// renderer's placeholder box visible until the next frame it's ready.
+fn fetch_web_image(app: &App, url: &str) -> Option<image::DynamicImage> {
+    let mut map = app.web_images.lock().unwrap();
+    match map.get(url) {
+        Some(crate::app::WebImageStatus::Ready(img)) => Some(img.clone()),
+        Some(_) => None,
+        None => {
+            map.insert(url.to_string(), crate::app::WebImageStatus::Loading);
+            let url_owned = url.to_string();
+            let handle = app.web_images.clone();
+            std::thread::spawn(move || {
+                let result = crate::ui::images::fetch_image(&url_owned);
+                let mut map = handle.lock().unwrap();
+                map.insert(
+                    url_owned,
+                    match result {
+                        Some(img) => crate::app::WebImageStatus::Ready(img),
+                        None => crate::app::WebImageStatus::Failed,
+                    },
+                );
+            });
+            None
+        }
     }
 }
 
