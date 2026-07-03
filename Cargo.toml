@@ -30,4 +30,7 @@ resvg = "0.44"
 [profile.release]
 opt-level = 3
 strip = true
-lto = true
+# lto = true fuerza -C linker-plugin-lto en rustc, que exige un linker que
+# entienda bitcode LLVM. Rustc entonces reinyecta lld pase lo que se le pida
+# via RUSTFLAGS, rompiendo el link de la Lua vendored de mlua (lua_* undefined).
+lto = false
