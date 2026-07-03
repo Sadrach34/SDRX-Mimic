@@ -23,15 +23,6 @@ impl Vault {
         })
     }
 
-    pub fn note_path(&self, name: &str) -> PathBuf {
-        let name = if name.ends_with(".md") {
-            name.to_string()
-        } else {
-            format!("{}.md", name)
-        };
-        self.root.join(name)
-    }
-
     pub fn refresh(&mut self) {
         self.tree.refresh();
     }

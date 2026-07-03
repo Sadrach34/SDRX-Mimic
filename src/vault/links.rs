@@ -2,13 +2,6 @@ use regex::Regex;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub fn extract_wikilinks(content: &str) -> Vec<String> {
-    let re = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
-    re.captures_iter(content)
-        .map(|c| c[1].to_string())
-        .collect()
-}
-
 pub fn resolve_link(vault_root: &Path, link_name: &str) -> Option<PathBuf> {
     let target_stem = link_name.trim();
     WalkDir::new(vault_root)

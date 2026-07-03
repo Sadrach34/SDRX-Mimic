@@ -87,22 +87,6 @@ impl Theme {
 
     // ── Field access ─────────────────────────────────────────────────────────
 
-    pub fn fields_mut(&mut self) -> Vec<(&'static str, &mut String)> {
-        vec![
-            ("bg",           &mut self.bg),
-            ("fg",           &mut self.fg),
-            ("accent",       &mut self.accent),
-            ("header",       &mut self.header),
-            ("link",         &mut self.link),
-            ("border",       &mut self.border),
-            ("status_bg",    &mut self.status_bg),
-            ("tab_active",   &mut self.tab_active),
-            ("tab_inactive", &mut self.tab_inactive),
-            ("sidebar_bg",   &mut self.sidebar_bg),
-            ("cursor",       &mut self.cursor),
-        ]
-    }
-
     pub fn get_field_by_index(&self, idx: usize) -> String {
         let values = [
             &self.bg, &self.fg, &self.accent, &self.header, &self.link,

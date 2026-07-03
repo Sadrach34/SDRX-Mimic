@@ -1,4 +1,5 @@
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum HookEvent {
     NoteSave { path: String, content: String },
     NoteOpen { path: String, content: String },
@@ -31,6 +32,7 @@ impl HookEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum HookResult {
     None,
     Text(String),

@@ -26,10 +26,7 @@ impl RhaiRuntime {
         engine.set_max_map_size(10_000);
 
         // Disable dangerous built-ins
-        #[cfg(not(feature = "no_std"))]
-        {
-            engine.disable_symbol("eval");
-        }
+        engine.disable_symbol("eval");
 
         let notifications_shared: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));

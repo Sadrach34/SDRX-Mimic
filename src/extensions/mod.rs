@@ -98,7 +98,7 @@ impl ExtensionManager {
                 Ok(c) => c,
                 Err(_) => continue,
             };
-            let mut manifest: Manifest = match toml::from_str(&content) {
+            let manifest: Manifest = match toml::from_str(&content) {
                 Ok(m) => m,
                 Err(e) => {
                     eprintln!("[mimic] Bad manifest at {:?}: {}", manifest_path, e);
@@ -232,9 +232,6 @@ impl ExtensionManager {
         all
     }
 
-    pub fn extensions_dir(&self) -> &PathBuf {
-        &self.extensions_dir
-    }
 }
 
 impl Default for ExtensionManager {

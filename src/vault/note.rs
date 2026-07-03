@@ -30,13 +30,6 @@ impl Note {
             .unwrap_or("untitled.md")
     }
 
-    pub fn stem(&self) -> &str {
-        self.path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("untitled")
-    }
-
     pub fn create(path: &Path) -> std::io::Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

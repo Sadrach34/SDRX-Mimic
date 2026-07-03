@@ -15,6 +15,7 @@ pub struct HomeState {
 }
 
 #[derive(PartialEq)]
+#[allow(dead_code)]
 pub enum HomeInput {
     None,
     NewVault,
@@ -49,7 +50,6 @@ pub fn render_home(
     let area = frame.area();
     let fg = Theme::parse_color(&theme.fg);
     let accent = Theme::parse_color(&theme.accent);
-    let header_color = Theme::parse_color(&theme.header);
     let bg = Theme::parse_color(&theme.bg);
     let border_color = Theme::parse_color(&theme.border);
     let inactive = Theme::parse_color(&theme.tab_inactive);

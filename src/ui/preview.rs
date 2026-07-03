@@ -20,6 +20,7 @@ pub struct PreviewCopyTarget {
 #[derive(Clone, Debug)]
 pub struct ImageSpec {
     pub path: String,
+    #[allow(dead_code)]
     pub alt: String,
     /// Row index (into `RenderedMarkdown::lines`) of the first interior row
     /// of the placeholder box, i.e. where the image content itself starts.
