@@ -25,10 +25,10 @@ cargo install --path .
 
 El binario `mmc` queda en `~/.cargo/bin/`.
 
-También disponible en AUR como [`mimic-git`](https://aur.archlinux.org/packages/sdrx-mimic-git):
+También disponible en AUR como [`sdrx-mimic-git`](https://aur.archlinux.org/packages/sdrx-mimic-git):
 
 ```bash
-yay -S mimic-git
+yay -S sdrx-mimic-git
 ```
 
 ---
