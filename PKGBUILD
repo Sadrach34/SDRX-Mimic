@@ -25,6 +25,7 @@ pkgver() {
 
 prepare() {
   cd "$_pkgname"
+  rm -rf target
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
