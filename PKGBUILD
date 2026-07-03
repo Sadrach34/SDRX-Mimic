@@ -1,5 +1,5 @@
 # Maintainer: Sadrach34 <https://github.com/Sadrach34>
-pkgname=mimic-git
+pkgname=sdrx-mimic-git
 _pkgname=SDRX-Mimic
 pkgver=r1.0000000
 pkgrel=1
@@ -13,9 +13,8 @@ optdepends=(
   'wl-clipboard: system clipboard support on Wayland'
 )
 makedepends=('git' 'cargo')
-provides=('mimic' 'mmc')
-conflicts=('sdrx-mimic-git')
-replaces=('sdrx-mimic-git')
+provides=('sdrx-mimic' 'mmc')
+conflicts=('sdrx-mimic')
 source=("git+${url}.git")
 sha256sums=('SKIP')
 
