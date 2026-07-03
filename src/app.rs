@@ -846,6 +846,21 @@ impl App {
             }
         };
 
+        if browser.new_folder_input.is_some() {
+            match key.code {
+                KeyCode::Esc => browser.cancel_create_folder(),
+                KeyCode::Enter => {
+                    if let Err(e) = browser.confirm_create_folder() {
+                        self.set_status(format!("Error creando carpeta: {}", e));
+                    }
+                }
+                KeyCode::Backspace => browser.pop_char(),
+                KeyCode::Char(c) => browser.push_char(c),
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 let purpose = browser.purpose.clone();
@@ -868,6 +883,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => browser.move_up(),
             KeyCode::Enter => browser.enter_selected(),
             KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => browser.go_up(),
+            KeyCode::Char('n') => browser.start_create_folder(),
             KeyCode::Char(' ') => {
                 let path = browser.selected_path();
                 let purpose = browser.purpose.clone();

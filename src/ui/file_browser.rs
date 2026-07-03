@@ -27,6 +27,8 @@ pub struct FileBrowserState {
     pub entries: Vec<PathBuf>,
     pub selected: usize,
     pub purpose: FileBrowserPurpose,
+    /// Buffer del nombre cuando se está creando una carpeta nueva; None = no está creando
+    pub new_folder_input: Option<String>,
 }
 
 impl FileBrowserState {
@@ -37,9 +39,47 @@ impl FileBrowserState {
             entries: Vec::new(),
             selected: 0,
             purpose,
+            new_folder_input: None,
         };
         state.load_entries();
         state
+    }
+
+    pub fn start_create_folder(&mut self) {
+        self.new_folder_input = Some(String::new());
+    }
+
+    pub fn cancel_create_folder(&mut self) {
+        self.new_folder_input = None;
+    }
+
+    pub fn push_char(&mut self, c: char) {
+        if let Some(buf) = self.new_folder_input.as_mut() {
+            buf.push(c);
+        }
+    }
+
+    pub fn pop_char(&mut self) {
+        if let Some(buf) = self.new_folder_input.as_mut() {
+            buf.pop();
+        }
+    }
+
+    /// Crea la carpeta con el nombre acumulado en current_path, recarga la lista
+    /// y selecciona la carpeta recién creada. Devuelve Err si falla la creación.
+    pub fn confirm_create_folder(&mut self) -> std::io::Result<()> {
+        let name = self.new_folder_input.take().unwrap_or_default();
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(());
+        }
+        let new_dir = self.current_path.join(name);
+        std::fs::create_dir_all(&new_dir)?;
+        self.load_entries();
+        if let Some(idx) = self.entries.iter().position(|p| p == &new_dir) {
+            self.selected = idx;
+        }
+        Ok(())
     }
 
     pub fn load_entries(&mut self) {
@@ -188,12 +228,18 @@ pub fn render_file_browser(frame: &mut Frame, theme: &Theme, state: &FileBrowser
         FileBrowserPurpose::OpenVault => "Espacio=abrir vault aquí",
         FileBrowserPurpose::NewVaultOverridePath => "Espacio=usar esta ruta",
     };
-    let help = Paragraph::new(Line::from(vec![
-        Span::styled(
-            format!("  j/k=mover  Enter=entrar  ←/h=subir  {}  Esc=cancelar", action_label),
-            Style::default().fg(inactive),
-        ),
-    ]))
+    let help_text = if state.new_folder_input.is_some() {
+        "  Enter=crear  Esc=cancelar".to_string()
+    } else {
+        format!(
+            "  j/k=mover  Enter=entrar  ←/h=subir  n=nueva carpeta  {}  Esc=cancelar",
+            action_label
+        )
+    };
+    let help = Paragraph::new(Line::from(vec![Span::styled(
+        help_text,
+        Style::default().fg(inactive),
+    )]))
     .alignment(Alignment::Left)
     .block(
         Block::default()
@@ -201,6 +247,25 @@ pub fn render_file_browser(frame: &mut Frame, theme: &Theme, state: &FileBrowser
             .border_style(Style::default().fg(border_color)),
     );
     frame.render_widget(help, chunks[2]);
+
+    // Overlay de input para nombre de carpeta nueva
+    if let Some(input) = &state.new_folder_input {
+        let input_popup = centered_rect(50, 15, area);
+        frame.render_widget(Clear, input_popup);
+        let input_block = Block::default()
+            .title(" Nueva carpeta ")
+            .title_style(Style::default().fg(accent).add_modifier(Modifier::BOLD))
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(bg));
+        let input_para = Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {}", input), Style::default().fg(fg)),
+            Span::styled("▏", Style::default().fg(accent)),
+        ]))
+        .block(input_block);
+        frame.render_widget(input_para, input_popup);
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: ratatui::layout::Rect) -> ratatui::layout::Rect {
