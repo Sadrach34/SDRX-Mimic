@@ -1201,9 +1201,29 @@ impl App {
             };
             if let Some((open, close)) = pair {
                 if let Some(tab) = self.tabs.get_mut(self.active_tab) {
-                    tab.editor.insert_char(open);
-                    tab.editor.insert_char(close);
-                    tab.editor.move_cursor(tui_textarea::CursorMove::Back);
+                    let (row, col) = tab.editor.cursor();
+                    let line = tab.editor.lines().get(row).cloned().unwrap_or_default();
+                    let chars: Vec<char> = line.chars().collect();
+                    let next_is_word = chars.get(col).map(|c| !c.is_whitespace()).unwrap_or(false);
+
+                    if next_is_word {
+                        // Ya hay una palabra pegada al cursor: envolverla completa
+                        // en vez de solo duplicar el char (ej. cursor antes de
+                        // "hola" ya escrito → 'hola', cursor queda tras la comilla
+                        // de apertura).
+                        let mut word_end = col;
+                        while word_end < chars.len() && !chars[word_end].is_whitespace() {
+                            word_end += 1;
+                        }
+                        tab.editor.move_cursor(tui_textarea::CursorMove::Jump(row as u16, word_end as u16));
+                        tab.editor.insert_char(close);
+                        tab.editor.move_cursor(tui_textarea::CursorMove::Jump(row as u16, col as u16));
+                        tab.editor.insert_char(open);
+                    } else {
+                        tab.editor.insert_char(open);
+                        tab.editor.insert_char(close);
+                        tab.editor.move_cursor(tui_textarea::CursorMove::Back);
+                    }
                     tab.note.dirty = true;
                     self.last_edit_time = Some(Instant::now());
                     return;
