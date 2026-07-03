@@ -4,7 +4,7 @@ pub mod manifest;
 pub mod rhai_runtime;
 pub mod runtime;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use manifest::{Language, Manifest};
 use hooks::{HookEvent, HookResult};
@@ -17,7 +17,7 @@ pub struct ExtensionEntry {
 }
 
 impl ExtensionEntry {
-    fn load_runtime(&mut self) {
+    fn load_runtime(&mut self, vault_root: Option<&Path>) {
         if !self.manifest.enabled {
             self.runtime = None;
             return;
@@ -31,9 +31,9 @@ impl ExtensionEntry {
             return;
         }
         let result: Result<Box<dyn ExtRuntime>, String> = match self.manifest.language {
-            Language::Lua => lua_runtime::LuaRuntime::new(&self.manifest, &script_path)
+            Language::Lua => lua_runtime::LuaRuntime::new(&self.manifest, &script_path, vault_root)
                 .map(|r| Box::new(r) as Box<dyn ExtRuntime>),
-            Language::Rhai => rhai_runtime::RhaiRuntime::new(&self.manifest, &script_path)
+            Language::Rhai => rhai_runtime::RhaiRuntime::new(&self.manifest, &script_path, vault_root)
                 .map(|r| Box::new(r) as Box<dyn ExtRuntime>),
         };
         match result {
@@ -46,6 +46,7 @@ impl ExtensionEntry {
 pub struct ExtensionManager {
     pub extensions: Vec<ExtensionEntry>,
     extensions_dir: PathBuf,
+    vault_root: Option<PathBuf>,
 }
 
 impl ExtensionManager {
@@ -56,6 +57,23 @@ impl ExtensionManager {
         Self {
             extensions: Vec::new(),
             extensions_dir,
+            vault_root: None,
+        }
+    }
+
+    /// Path to the per-vault extensions directory: `<vault_root>/.mimic/extensions/`
+    pub fn vault_extensions_dir(vault_root: &Path) -> PathBuf {
+        vault_root.join(".mimic").join("extensions")
+    }
+
+    /// Extension manager scoped to a single vault
+    pub fn new_for_vault(vault_root: &Path) -> Self {
+        let extensions_dir = Self::vault_extensions_dir(vault_root);
+        let _ = std::fs::create_dir_all(&extensions_dir);
+        Self {
+            extensions: Vec::new(),
+            extensions_dir,
+            vault_root: Some(vault_root.to_path_buf()),
         }
     }
 
@@ -94,15 +112,16 @@ impl ExtensionManager {
                 dir: path.clone(),
                 runtime: None,
             };
-            entry.load_runtime();
+            entry.load_runtime(self.vault_root.as_deref());
             self.extensions.push(entry);
         }
     }
 
     pub fn enable(&mut self, idx: usize) {
+        let vault_root = self.vault_root.clone();
         if let Some(entry) = self.extensions.get_mut(idx) {
             entry.manifest.enabled = true;
-            entry.load_runtime();
+            entry.load_runtime(vault_root.as_deref());
             self.save_manifest(idx);
         }
     }

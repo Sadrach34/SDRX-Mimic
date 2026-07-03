@@ -8,10 +8,9 @@ use ratatui::{
 
 use crate::{
     config::Theme,
-    extensions::ExtensionEntry,
     modes::SettingsTab,
     ui::{
-        extension_list::render_extension_list,
+        extension_list::{render_extension_list, ExtScopeView},
         theme_editor::{render_theme_editor, ThemeEditorState},
     },
 };
@@ -20,7 +19,7 @@ pub fn render_settings(
     frame: &mut Frame,
     theme: &Theme,
     tab: &SettingsTab,
-    extensions: &[ExtensionEntry],
+    scopes: &[ExtScopeView],
     ext_selected: usize,
     theme_state: &ThemeEditorState,
     user_themes: &[(String, Theme)],
@@ -74,7 +73,7 @@ pub fn render_settings(
 
     match tab {
         SettingsTab::Extensions => {
-            render_extension_list(frame, theme, extensions, ext_selected, chunks[1]);
+            render_extension_list(frame, theme, scopes, ext_selected, chunks[1]);
         }
         SettingsTab::Themes => {
             // Render theme editor content inline (reuse existing render_theme_editor)

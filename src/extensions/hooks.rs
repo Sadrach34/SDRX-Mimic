@@ -4,6 +4,7 @@ pub enum HookEvent {
     NoteOpen { path: String, content: String },
     ModeChange { from: String, to: String },
     MarkdownBlock { lang: String, code: String },
+    VaultOpen { path: String },
 }
 
 impl HookEvent {
@@ -13,6 +14,7 @@ impl HookEvent {
             HookEvent::NoteOpen { .. } => "on_open",
             HookEvent::ModeChange { .. } => "on_mode_change",
             HookEvent::MarkdownBlock { .. } => "on_markdown_block",
+            HookEvent::VaultOpen { .. } => "on_vault_open",
         }
     }
 
@@ -23,6 +25,7 @@ impl HookEvent {
             HookEvent::NoteOpen { .. } => "hooks.open",
             HookEvent::ModeChange { .. } => "hooks.mode",
             HookEvent::MarkdownBlock { .. } => "markdown",
+            HookEvent::VaultOpen { .. } => "hooks.vault",
         }
     }
 }

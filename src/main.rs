@@ -14,7 +14,7 @@ use crossterm::{event::{DisableMouseCapture, EnableMouseCapture}, execute};
 use crate::{app::App, config::Config, extensions::ExtensionManager};
 
 #[derive(Parser)]
-#[command(name = "mimic", about = "SDRX Mimic — TUI vault editor con soporte de extensiones")]
+#[command(name = "mmc", about = "SDRX Mimic — TUI vault editor con soporte de extensiones")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -40,18 +40,51 @@ enum Commands {
     },
 }
 
+#[derive(clap::Args)]
+struct VaultScope {
+    /// Operar sobre las extensiones de este vault en vez de las globales
+    #[arg(long, value_name = "PATH")]
+    vault: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum ExtAction {
     /// Instalar extensión desde una carpeta local
-    Install { path: PathBuf },
+    Install {
+        path: PathBuf,
+        #[command(flatten)]
+        scope: VaultScope,
+    },
     /// Desinstalar una extensión por nombre
-    Remove { name: String },
+    Remove {
+        name: String,
+        #[command(flatten)]
+        scope: VaultScope,
+    },
     /// Listar extensiones instaladas
-    List,
+    List {
+        #[command(flatten)]
+        scope: VaultScope,
+    },
     /// Activar una extensión
-    Enable { name: String },
+    Enable {
+        name: String,
+        #[command(flatten)]
+        scope: VaultScope,
+    },
     /// Desactivar una extensión
-    Disable { name: String },
+    Disable {
+        name: String,
+        #[command(flatten)]
+        scope: VaultScope,
+    },
+}
+
+fn resolve_manager(scope: &VaultScope) -> ExtensionManager {
+    match &scope.vault {
+        Some(v) => ExtensionManager::new_for_vault(v),
+        None => ExtensionManager::new(),
+    }
 }
 
 fn main() -> std::io::Result<()> {
@@ -102,11 +135,10 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle_ext_command(action: ExtAction) -> std::io::Result<()> {
-    let mut manager = ExtensionManager::new();
-    manager.load_all();
-
     match action {
-        ExtAction::List => {
+        ExtAction::List { scope } => {
+            let mut manager = resolve_manager(&scope);
+            manager.load_all();
             if manager.extensions.is_empty() {
                 println!("Sin extensiones instaladas.");
             } else {
@@ -117,23 +149,29 @@ fn handle_ext_command(action: ExtAction) -> std::io::Result<()> {
                 }
             }
         }
-        ExtAction::Install { path } => {
+        ExtAction::Install { path, scope } => {
+            let mut manager = resolve_manager(&scope);
+            manager.load_all();
             println!("⚠  ADVERTENCIA: Las extensiones son código de terceros no revisado.");
             println!("   Instala solo extensiones de fuentes confiables.");
             println!("   El creador de SDRX Mimic no se responsabiliza de daños.");
             println!();
             match manager.install_from(&path) {
-                Ok(name) => println!("Extensión '{}' instalada (desactivada por defecto).\nActívala con: mimic ext enable {}", name, name),
+                Ok(name) => println!("Extensión '{}' instalada (desactivada por defecto).\nActívala con: mmc ext enable {}", name, name),
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
-        ExtAction::Remove { name } => {
+        ExtAction::Remove { name, scope } => {
+            let mut manager = resolve_manager(&scope);
+            manager.load_all();
             match manager.remove(&name) {
                 Ok(_) => println!("Extensión '{}' eliminada.", name),
                 Err(e) => eprintln!("Error: {}", e),
             }
         }
-        ExtAction::Enable { name } => {
+        ExtAction::Enable { name, scope } => {
+            let mut manager = resolve_manager(&scope);
+            manager.load_all();
             println!("⚠  ADVERTENCIA: Activar una extensión ejecuta código de terceros.");
             println!("   El creador de SDRX Mimic no se responsabiliza de daños.");
             if let Some(idx) = manager.extensions.iter().position(|e| e.manifest.name == name) {
@@ -143,7 +181,9 @@ fn handle_ext_command(action: ExtAction) -> std::io::Result<()> {
                 eprintln!("Extensión '{}' no encontrada.", name);
             }
         }
-        ExtAction::Disable { name } => {
+        ExtAction::Disable { name, scope } => {
+            let mut manager = resolve_manager(&scope);
+            manager.load_all();
             if let Some(idx) = manager.extensions.iter().position(|e| e.manifest.name == name) {
                 manager.disable(idx);
                 println!("Extensión '{}' desactivada.", name);

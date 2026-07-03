@@ -15,7 +15,7 @@ pub struct RhaiRuntime {
 }
 
 impl RhaiRuntime {
-    pub fn new(manifest: &Manifest, script_path: &Path) -> Result<Self, String> {
+    pub fn new(manifest: &Manifest, script_path: &Path, vault_root: Option<&Path>) -> Result<Self, String> {
         let mut engine = Engine::new();
 
         // Sandbox: limit operations and call depth
@@ -48,6 +48,10 @@ impl RhaiRuntime {
                 std::fs::write(path, content).is_ok()
             });
         }
+
+        // Register mimic_vault_root() — path of the open vault, "" if none
+        let vroot = vault_root.map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        engine.register_fn("mimic_vault_root", move || -> String { vroot.clone() });
 
         // Register process.run only if permitted
         if manifest.has_permission("process.run") {
@@ -108,6 +112,12 @@ impl ExtRuntime for RhaiRuntime {
             HookEvent::MarkdownBlock { lang, code } => {
                 self.engine
                     .call_fn::<rhai::Dynamic>(&mut scope, &self.ast, fn_name, (lang.clone(), code.clone()))
+                    .ok()
+                    .and_then(|v| v.try_cast::<String>())
+            }
+            HookEvent::VaultOpen { path } => {
+                self.engine
+                    .call_fn::<rhai::Dynamic>(&mut scope, &self.ast, fn_name, (path.clone(),))
                     .ok()
                     .and_then(|v| v.try_cast::<String>())
             }

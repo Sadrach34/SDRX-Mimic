@@ -8,10 +8,15 @@ use ratatui::{
 
 use crate::{config::Theme, extensions::ExtensionEntry};
 
+pub struct ExtScopeView<'a> {
+    pub label: &'a str,
+    pub extensions: &'a [ExtensionEntry],
+}
+
 pub fn render_extension_list(
     frame: &mut Frame,
     theme: &Theme,
-    extensions: &[ExtensionEntry],
+    scopes: &[ExtScopeView],
     selected: usize,
     area: Rect,
 ) {
@@ -26,43 +31,58 @@ pub fn render_extension_list(
         .constraints([Constraint::Min(0), Constraint::Length(5)])
         .split(area);
 
-    // Extension list
-    let items: Vec<ListItem> = if extensions.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut flat_idx = 0usize;
+    let mut selected_item_pos: Option<usize> = None;
+    let mut selected_entry: Option<&ExtensionEntry> = None;
+    let mut any_entries = false;
+
+    for scope in scopes {
+        items.push(ListItem::new(Line::from(Span::styled(
+            format!("— {} —", scope.label),
+            Style::default().fg(inactive).add_modifier(Modifier::BOLD),
+        ))));
+
+        for e in scope.extensions {
+            any_entries = true;
+            let is_sel = flat_idx == selected;
+            let enabled_icon = if e.manifest.enabled { "●" } else { "○" };
+            let enabled_color = if e.manifest.enabled { accent } else { inactive };
+            let sel_icon = if is_sel { "▸" } else { " " };
+
+            let style = if is_sel {
+                Style::default().fg(accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(fg)
+            };
+
+            let danger = if e.manifest.has_dangerous_permissions() { " ⚠" } else { "" };
+
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(format!("{} ", sel_icon), style),
+                Span::styled(format!("{} ", enabled_icon), Style::default().fg(enabled_color)),
+                Span::styled(format!("{} v{}", e.manifest.name, e.manifest.version), style),
+                Span::styled(danger, Style::default().fg(ratatui::style::Color::Yellow)),
+                Span::styled(
+                    format!("  — {}", e.manifest.author),
+                    Style::default().fg(inactive),
+                ),
+            ])));
+
+            if is_sel {
+                selected_item_pos = Some(items.len() - 1);
+                selected_entry = Some(e);
+            }
+            flat_idx += 1;
+        }
+    }
+
+    if !any_entries {
+        items.push(ListItem::new(Line::from(Span::styled(
             "  Sin extensiones instaladas.",
             Style::default().fg(inactive),
-        )))]
-    } else {
-        extensions
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                let is_sel = i == selected;
-                let enabled_icon = if e.manifest.enabled { "●" } else { "○" };
-                let enabled_color = if e.manifest.enabled { accent } else { inactive };
-                let sel_icon = if is_sel { "▸" } else { " " };
-
-                let style = if is_sel {
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(fg)
-                };
-
-                let danger = if e.manifest.has_dangerous_permissions() { " ⚠" } else { "" };
-
-                ListItem::new(Line::from(vec![
-                    Span::styled(format!("{} ", sel_icon), style),
-                    Span::styled(format!("{} ", enabled_icon), Style::default().fg(enabled_color)),
-                    Span::styled(format!("{} v{}", e.manifest.name, e.manifest.version), style),
-                    Span::styled(danger, Style::default().fg(ratatui::style::Color::Yellow)),
-                    Span::styled(
-                        format!("  — {}", e.manifest.author),
-                        Style::default().fg(inactive),
-                    ),
-                ]))
-            })
-            .collect()
-    };
+        ))));
+    }
 
     let list_block = Block::default()
         .title(" Extensiones [BETA] ")
@@ -73,9 +93,7 @@ pub fn render_extension_list(
         .style(Style::default().bg(bg));
 
     let mut list_state = ListState::default();
-    if !extensions.is_empty() {
-        list_state.select(Some(selected));
-    }
+    list_state.select(selected_item_pos);
 
     frame.render_stateful_widget(
         List::new(items).block(list_block),
@@ -84,7 +102,7 @@ pub fn render_extension_list(
     );
 
     // Detail panel for selected extension
-    if let Some(entry) = extensions.get(selected) {
+    if let Some(entry) = selected_entry {
         let m = &entry.manifest;
         let status = if m.enabled { "ACTIVA" } else { "INACTIVA" };
         let perms = if m.permissions.is_empty() {

@@ -16,7 +16,7 @@ pub struct LuaRuntime {
 }
 
 impl LuaRuntime {
-    pub fn new(manifest: &Manifest, script_path: &Path) -> Result<Self, String> {
+    pub fn new(manifest: &Manifest, script_path: &Path, vault_root: Option<&Path>) -> Result<Self, String> {
         let safe_libs = StdLib::MATH | StdLib::STRING | StdLib::TABLE | StdLib::UTF8;
 
         // Conditionally add string/io libs only if permitted
@@ -71,6 +71,11 @@ impl LuaRuntime {
         mimic_table.set("on", reg_hook)
             .map_err(|e| format!("Lua set error: {}", e))?;
 
+        // mimic.vault_root — path of the open vault, nil if none
+        let vroot_str = vault_root.map(|p| p.to_string_lossy().to_string());
+        mimic_table.set("vault_root", vroot_str)
+            .map_err(|e| format!("Lua set error: {}", e))?;
+
         globals.set("mimic", mimic_table)
             .map_err(|e| format!("Lua set error: {}", e))?;
         globals.set("__commands", lua.create_table().map_err(|e| e.to_string())?)
@@ -105,6 +110,9 @@ impl ExtRuntime for LuaRuntime {
                 HookEvent::MarkdownBlock { lang, code } => {
                     func.call::<Option<String>>((lang.clone(), code.clone())).ok()?
                 }
+                HookEvent::VaultOpen { path } => {
+                    func.call::<Option<String>>(path.clone()).ok()?
+                }
             }
         })();
 
@@ -120,6 +128,9 @@ impl ExtRuntime for LuaRuntime {
                 }
                 HookEvent::MarkdownBlock { lang, code } => {
                     func.call::<Option<String>>((lang.clone(), code.clone())).ok()?
+                }
+                HookEvent::VaultOpen { path } => {
+                    func.call::<Option<String>>(path.clone()).ok()?
                 }
             }
         });

@@ -193,7 +193,7 @@ let output = mimic_run("python3", ["-c", "print('ok')"]);
 
 ### Desde la terminal
 ```bash
-mimic ext install /ruta/a/mi-extension
+mmc ext install /ruta/a/mi-extension
 ```
 
 ### Manualmente (copiar la carpeta)
@@ -210,7 +210,7 @@ La extensión se instala **desactivada por defecto**. Para activarla:
 
 O desde la terminal:
 ```bash
-mimic ext enable mi-extension
+mmc ext enable mi-extension
 ```
 
 ---
@@ -219,11 +219,11 @@ mimic ext enable mi-extension
 
 ### Terminal
 ```bash
-mimic ext list                      # listar extensiones instaladas
-mimic ext install /ruta/ext         # instalar desde carpeta
-mimic ext remove nombre             # desinstalar
-mimic ext enable nombre             # activar
-mimic ext disable nombre            # desactivar
+mmc ext list                      # listar extensiones instaladas
+mmc ext install /ruta/ext         # instalar desde carpeta
+mmc ext remove nombre             # desinstalar
+mmc ext enable nombre             # activar
+mmc ext disable nombre            # desactivar
 ```
 
 ### Dentro del TUI (modo Command)
@@ -328,7 +328,7 @@ Las extensiones se ejecutan en un entorno **restringido**:
 
 Para distribuir tu extensión:
 1. Empaqueta la carpeta como un `.zip` o `.tar.gz`
-2. Los usuarios la descomprimen y usan `mimic ext install <carpeta>`
+2. Los usuarios la descomprimen y usan `mmc ext install <carpeta>`
 3. En el futuro habrá una tienda oficial de extensiones
 
 ---
