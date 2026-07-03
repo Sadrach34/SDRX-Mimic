@@ -62,11 +62,25 @@ pub fn render_settings(
     } else {
         Style::default().fg(fg).bg(tab_inactive_bg)
     };
+    let general_style = if *tab == SettingsTab::General {
+        Style::default().fg(accent).bg(tab_active_bg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(fg).bg(tab_inactive_bg)
+    };
+    let about_style = if *tab == SettingsTab::About {
+        Style::default().fg(accent).bg(tab_active_bg).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(fg).bg(tab_inactive_bg)
+    };
 
     let tab_bar = Paragraph::new(Line::from(vec![
         Span::styled(" Extensiones [BETA] ", ext_style),
         Span::styled("  ", Style::default().bg(bg)),
         Span::styled(" Temas ", theme_style),
+        Span::styled("  ", Style::default().bg(bg)),
+        Span::styled(" General ", general_style),
+        Span::styled("  ", Style::default().bg(bg)),
+        Span::styled(" Sobre mí ", about_style),
         Span::styled("  Tab=cambiar   Esc=cerrar", Style::default().fg(inactive).bg(bg)),
     ]));
     frame.render_widget(tab_bar, chunks[0]);
@@ -80,7 +94,73 @@ pub fn render_settings(
             // theme_editor renders as a centered overlay so we call it directly
             render_theme_editor(frame, theme, theme_state, user_themes);
         }
+        SettingsTab::General => {
+            render_general_settings(frame, theme, chunks[1]);
+        }
+        SettingsTab::About => {
+            render_about(frame, theme, chunks[1]);
+        }
     }
+}
+
+fn render_general_settings(frame: &mut Frame, theme: &Theme, area: Rect) {
+    let fg = Theme::parse_color(&theme.fg);
+    let inactive = Theme::parse_color(&theme.tab_inactive);
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Configuración general — próximamente",
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Aquí vivirán ajustes generales de la app.",
+            Style::default().fg(inactive),
+        )),
+    ]);
+    frame.render_widget(text, area);
+}
+
+fn render_about(frame: &mut Frame, theme: &Theme, area: Rect) {
+    let accent = Theme::parse_color(&theme.accent);
+    let fg = Theme::parse_color(&theme.fg);
+    let inactive = Theme::parse_color(&theme.tab_inactive);
+    let link_color = Theme::parse_color(&theme.link);
+
+    let version = env!("CARGO_PKG_VERSION");
+
+    let text = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Hola, mi nombre es Sadrach.",
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  Soy ingeniero en software.",
+            Style::default().fg(fg),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Equipo:   ", Style::default().fg(accent)),
+            Span::styled("https://cc.codecaster.workers.dev/", Style::default().fg(link_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Personal: ", Style::default().fg(accent)),
+            Span::styled("https://cc.codecaster.workers.dev/sdrx/", Style::default().fg(link_color)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Versión: ", Style::default().fg(accent)),
+            Span::styled(format!("SDRX Mimic v{}", version), Style::default().fg(fg)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Muchas gracias por usar SDRX Mimic ♥",
+            Style::default().fg(inactive),
+        )),
+    ]);
+    frame.render_widget(text, area);
 }
 
 pub fn render_warning_dialog(

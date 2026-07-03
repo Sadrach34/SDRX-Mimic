@@ -18,6 +18,19 @@ pub enum AppMode {
 pub enum SettingsTab {
     Extensions,
     Themes,
+    General,
+    About,
+}
+
+impl SettingsTab {
+    pub fn next(&self) -> Self {
+        match self {
+            SettingsTab::Extensions => SettingsTab::Themes,
+            SettingsTab::Themes => SettingsTab::General,
+            SettingsTab::General => SettingsTab::About,
+            SettingsTab::About => SettingsTab::Extensions,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, Default)]

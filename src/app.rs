@@ -1482,9 +1482,25 @@ impl App {
         if self.settings_tab == SettingsTab::Themes {
             match key.code {
                 KeyCode::Esc => { self.app_mode = AppMode::Normal; }
-                KeyCode::Tab => { self.settings_tab = SettingsTab::Extensions; }
+                KeyCode::Tab => { self.settings_tab = self.settings_tab.next(); }
                 KeyCode::Char('1') => { self.settings_tab = SettingsTab::Extensions; }
+                KeyCode::Char('3') => { self.settings_tab = SettingsTab::General; }
+                KeyCode::Char('4') => { self.settings_tab = SettingsTab::About; }
                 _ => self.handle_theme_editor(key),
+            }
+            return;
+        }
+
+        // General y Sobre mí son estáticas: solo navegación de tabs
+        if self.settings_tab == SettingsTab::General || self.settings_tab == SettingsTab::About {
+            match key.code {
+                KeyCode::Esc => { self.app_mode = AppMode::Normal; }
+                KeyCode::Tab => { self.settings_tab = self.settings_tab.next(); }
+                KeyCode::Char('1') => { self.settings_tab = SettingsTab::Extensions; }
+                KeyCode::Char('2') => { self.settings_tab = SettingsTab::Themes; }
+                KeyCode::Char('3') => { self.settings_tab = SettingsTab::General; }
+                KeyCode::Char('4') => { self.settings_tab = SettingsTab::About; }
+                _ => {}
             }
             return;
         }
@@ -1494,8 +1510,10 @@ impl App {
             + self.vault_extension_manager.as_ref().map_or(0, |vm| vm.extensions.len());
         match key.code {
             KeyCode::Esc => { self.app_mode = AppMode::Normal; }
-            KeyCode::Tab => { self.settings_tab = SettingsTab::Themes; }
+            KeyCode::Tab => { self.settings_tab = self.settings_tab.next(); }
             KeyCode::Char('2') => { self.settings_tab = SettingsTab::Themes; }
+            KeyCode::Char('3') => { self.settings_tab = SettingsTab::General; }
+            KeyCode::Char('4') => { self.settings_tab = SettingsTab::About; }
             KeyCode::Char('j') | KeyCode::Down => {
                 if ext_count > 0 && self.ext_selected + 1 < ext_count {
                     self.ext_selected += 1;
