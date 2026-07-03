@@ -24,6 +24,15 @@ use crate::{
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
+    // Pinta todo el frame con el bg del tema antes de cualquier widget: sin esto,
+    // celdas que ningún widget toca (huecos entre paneles, bordes) quedan con el
+    // bg "default" del terminal, que en kitty/alacritty con transparencia se ve
+    // a través del fondo del escritorio en vez del color del tema.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(Theme::parse_color(&app.config.theme.bg))),
+        area,
+    );
+
     if app.app_mode == AppMode::Home {
         let recent = app.config.settings.vault.recent.clone();
         render_home(frame, &app.config.theme, &app.home_state, &recent);
