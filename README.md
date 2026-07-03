@@ -8,7 +8,7 @@ Editor de notas Markdown para la terminal. Compatible con vaults de Obsidian. Ex
   ███████╗██║  ██║██████╔╝ ╚███╔╝     ██╔████╔██║██║██╔████╔██║██║██║
   ╚════██║██║  ██║██╔══██╗ ██╔██╗     ██║╚██╔╝██║██║██║╚██╔╝██║██║██║
   ███████║██████╔╝██║  ██║██╔╝ ██╗    ██║ ╚═╝ ██║██║██║ ╚═╝ ██║██║╚██████╗
-  ╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝     ╚═╝╚═╝╚═╝     ╚═╝╚═╝ ╚═════╝
+  ╚══════╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝    ╚═╝     ╚═╝╚═╝╚═╝     ╚═╝╚═╝ ╚═════╝
 ```
 
 ---
@@ -25,7 +25,7 @@ cargo install --path .
 
 El binario `mmc` queda en `~/.cargo/bin/`.
 
-También disponible en AUR como [`mimic-git`](https://aur.archlinux.org/packages/mimic-git):
+También disponible en AUR como [`mimic-git`](https://aur.archlinux.org/packages/sdrx-mimic-git):
 
 ```bash
 yay -S mimic-git
