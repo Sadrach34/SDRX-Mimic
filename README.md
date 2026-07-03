@@ -18,22 +18,28 @@ Editor de notas Markdown para la terminal. Compatible con vaults de Obsidian. Ex
 **Requisitos:** Rust (edición 2021+) · GCC o Clang
 
 ```bash
-git clone <repo>
-cd SDRX-Notes
+git clone https://github.com/Sadrach34/SDRX-Mimic.git
+cd SDRX-Mimic
 cargo install --path .
 ```
 
-El binario `mimic` queda en `~/.cargo/bin/`.
+El binario `mmc` queda en `~/.cargo/bin/`.
+
+También disponible en AUR como [`mimic-git`](https://aur.archlinux.org/packages/mimic-git):
+
+```bash
+yay -S mimic-git
+```
 
 ---
 
 ## Uso básico
 
 ```bash
-mimic                                    # abre el último vault o pantalla de inicio
-mimic /ruta/al/vault                     # abre vault específico
-mimic /ruta/al/vault --new               # crea y abre nuevo vault
-mimic /ruta/al/vault --note "texto"      # crea nota rápida (sin abrir TUI)
+mmc                                      # abre el último vault o pantalla de inicio
+mmc /ruta/al/vault                     # abre vault específico
+mmc /ruta/al/vault --new               # crea y abre nuevo vault
+mmc /ruta/al/vault --note "texto"      # crea nota rápida (sin abrir TUI)
 ```
 
 ---
@@ -75,18 +81,20 @@ Mimic opera mediante modos, similar a Vim.
 |-------|--------|
 | `e` / `i` | Entrar modo Insert (editar nota) |
 | `:` | Entrar modo Command |
-| `Tab` | Siguiente tab |
-| `Shift+Tab` | Tab anterior |
+| `Tab` | Siguiente panel (Sidebar → Editor → Preview) |
+| `Shift+Tab` | Panel anterior |
+| `Alt+→` | Siguiente tab (archivo abierto) |
+| `Alt+←` | Tab anterior (archivo abierto) |
 | `Ctrl+W` | Cerrar tab activo |
-| `j` / `↓` | Mover selección hacia abajo en el sidebar |
-| `k` / `↑` | Mover selección hacia arriba en el sidebar |
+| `j` / `k` | Mover selección arriba/abajo en el sidebar (siempre) |
+| `↓` / `↑` | Con foco en Sidebar: navegar árbol. Con foco en Preview: scroll preview |
 | `h` / `←` | Colapsar carpeta en el sidebar |
 | `l` / `→` | Expandir carpeta en el sidebar |
 | `Enter` | Abrir nota seleccionada / expandir o colapsar carpeta |
 | `g` | Seguir wikilink bajo el cursor (`[[nota]]`) |
 | `d` | Scroll preview hacia abajo (en modos Split y Preview) |
 | `u` | Scroll preview hacia arriba (en modos Split y Preview) |
-| `Ctrl+V` | Ciclar entre vistas: Editor → Split → Preview |
+| `Ctrl+V` | Ciclar entre vistas: Editor → Split → Preview (el foco salta al panel visible correspondiente) |
 | `Ctrl+T` | Abrir Configuración (Extensiones + Temas) |
 | `Ctrl+H` | Ir a pantalla de inicio |
 | `Ctrl+S` | Guardar nota activa |
@@ -94,6 +102,8 @@ Mimic opera mediante modos, similar a Vim.
 | `D` / `Ctrl+D` | Eliminar nota activa (abre Command con `:delete` pre-escrito, Enter confirma) |
 | `Ctrl+C` | Copiar contenido completo de la nota al clipboard |
 | `Ctrl+Q` | Guardar todo y salir |
+
+También podés hacer clic con el mouse: en una tab para cambiar de archivo, en la `✕` de una tab para cerrarla, en un ítem del sidebar para abrirlo, o en cualquier panel para llevarle el foco.
 
 ### Modo Insert
 
@@ -103,10 +113,14 @@ Mimic opera mediante modos, similar a Vim.
 | `Ctrl+S` | Guardar |
 | `Ctrl+Z` | Deshacer |
 | `Ctrl+Y` | Rehacer |
-| `Ctrl+C` / `Ctrl+Shift+C` | Copiar selección al clipboard del sistema |
+| `Shift+↑/↓/←/→` | Seleccionar texto (resaltado visible) |
+| `Ctrl+C` / `Ctrl+Shift+C` | Copiar selección al clipboard |
+| `Ctrl+V` | Pegar (portapapeles del sistema, o buffer interno si no hay servidor gráfico) |
 | `Ctrl+Backspace` / `Ctrl+W` / `Ctrl+H` | Eliminar palabra anterior |
 | `Enter` | Nueva línea (continúa listas automáticamente) |
 | `"` / `'` / `` ` `` | Auto-cierra el par de caracteres |
+
+Las líneas largas se envuelven automáticamente (word wrap) en vez de scrollear horizontalmente. El gutter muestra el número de línea lógica.
 
 ### Modo Command
 
@@ -176,6 +190,23 @@ Cicla con `Ctrl+V`:
 | **Preview** | Sidebar + preview Markdown renderizado |
 
 En los bloques de código del preview aparece un botón `[copy]` en la cabecera. Puedes hacer clic con el mouse sobre ese botón para copiar el bloque completo al clipboard.
+
+---
+
+## Foco por panel
+
+Sidebar, Editor y Preview son contenedores independientes: cada uno mantiene su propio scroll/estado. `Tab`/`Shift+Tab` cicla el foco entre los paneles visibles en la vista actual, y un borde de acento marca cuál está activo. Clic con el mouse en cualquier panel también le da foco.
+
+---
+
+## Imágenes
+
+Las imágenes en markdown (`![alt](ruta)`) se muestran directo en el preview:
+
+- **Formatos**: PNG, JPEG, GIF, WebP, SVG (rasterizado a bitmap automáticamente).
+- **Rutas locales**: relativas a la raíz del vault (igual que los wikilinks), con fallback a relativas a la nota si no se encuentran ahí.
+- **URLs http(s)**: se descargan en segundo plano (no bloquean la UI) y se cachean.
+- **Calidad**: si el terminal soporta el protocolo gráfico de Kitty (Kitty, Ghostty, WezTerm), se renderiza la imagen real a resolución completa. Si no, cae a un fallback de arte ANSI (bloques de medio carácter) que funciona en cualquier terminal. En ambos casos se respeta la proporción real de la imagen (sin estirar).
 
 ---
 
@@ -259,31 +290,49 @@ permissions = ["commands", "hooks.save"]
 ### Gestión desde terminal
 
 ```bash
-mimic ext list                      # listar extensiones instaladas
-mimic ext install /ruta/extension   # instalar desde carpeta local
-mimic ext enable <nombre>           # activar
-mimic ext disable <nombre>          # desactivar
-mimic ext remove <nombre>           # desinstalar
+mmc ext list                      # listar extensiones instaladas (globales)
+mmc ext install /ruta/extension   # instalar desde carpeta local
+mmc ext enable <nombre>           # activar
+mmc ext disable <nombre>          # desactivar
+mmc ext remove <nombre>           # desinstalar
 ```
+
+Añade `--vault <ruta>` a cualquiera de los comandos anteriores para operar
+sobre las extensiones de un vault específico (`<vault>/.mimic/extensions/`)
+en vez de las globales:
+
+```bash
+mmc ext list --vault /ruta/al/vault
+mmc ext install /ruta/extension --vault /ruta/al/vault
+```
+
+Las extensiones globales y las de vault **coexisten** — ambas se cargan y
+ejecutan a la vez cuando hay un vault abierto. Dentro de un script, `mimic.vault_root`
+(Lua) / `mimic_vault_root()` (Rhai) devuelve la ruta del vault activo (vacío/nil
+si la extensión es global y no hay vault, o si corre fuera de un vault).
 
 ### Gestión desde el TUI
 
-**`Ctrl+T`** → tab **Extensiones [BETA]**
+**`Ctrl+T`** → tab **Extensiones [BETA]**. El panel muestra dos secciones,
+**Global** y **Vault**, cada una con sus propias extensiones.
 
 ### Comandos in-app
 
 ```
-:ext list
-:ext install <ruta>
-:ext enable <nombre>
-:ext disable <nombre>
-:ext remove <nombre>
+:ext list [--vault]
+:ext install <ruta> [--vault]
+:ext enable <nombre> [--vault]
+:ext disable <nombre> [--vault]
+:ext remove <nombre> [--vault]
 ```
+
+`--vault` aplica la acción sobre las extensiones del vault actualmente
+abierto en vez de las globales (se ignora con aviso si no hay vault abierto).
 
 ### Extensión de ejemplo incluida
 
 ```bash
-mimic ext install ./ejemplos-extensiones/hola-mundo
+mmc ext install ./ejemplos-extensiones/hola-mundo
 ```
 
 Muestra mensajes en la barra de estado al abrir/guardar notas y registra el comando `:hola`.
@@ -311,7 +360,9 @@ Mimic recuerda hasta 20 vaults recientes y el último directorio por defecto par
 
 ## Clipboard
 
-Usa `wl-copy` (Wayland), `xclip` o `xsel` (X11) según lo disponible. Si ninguno está instalado o no hay servidor gráfico disponible (ej. sesión SSH sin forwarding), el clipboard no funciona pero la app no muestra errores.
+Al copiar, Mimic manda la selección por **OSC 52** — un escape de terminal que viaja a través de la sesión SSH y llega directo al portapapeles de tu máquina local, sin necesitar servidor gráfico remoto. Soportado por iTerm2, Kitty, Ghostty, WezTerm, Alacritty, Windows Terminal y tmux (con `set -g allow-passthrough on`).
+
+Además intenta `wl-copy`/`wl-paste` (Wayland) o `xclip`/`xsel` (X11) si hay servidor gráfico disponible localmente (o vía `ssh -X`). Si nada de eso aplica, pegar (`Ctrl+V`) cae al buffer interno del editor — lo último copiado/cortado dentro de Mimic sigue disponible para pegar.
 
 ---
 
@@ -330,13 +381,17 @@ Usa `wl-copy` (Wayland), `xclip` o `xsel` (X11) según lo disponible. Si ninguno
 | Wikilinks | `regex` 1 |
 | Runtime Lua | `mlua` 0.10 (Lua 5.4 embebido) |
 | Runtime Rhai | `rhai` 1 |
+| Decodificación de imágenes | `image` 0.25 (PNG/JPEG/GIF/WebP) |
+| Rasterizado SVG | `resvg` 0.44 |
+| Descarga de imágenes web | `ureq` 2 |
+| Codificación base64 (Kitty/OSC52) | `base64` 0.22 |
 
 ---
 
 ## Roadmap
 
 - [ ] Tienda de extensiones
-- [ ] Renderizado de imágenes en terminal (Kitty/Sixel)
+- [ ] Renderizado de imágenes vía Sixel (fallback adicional a Kitty/mosaic)
 - [ ] Exportar notas a HTML / PDF
 - [ ] Sincronización de vaults
 - [ ] Visualización de grafo de notas
@@ -346,4 +401,4 @@ Usa `wl-copy` (Wayland), `xclip` o `xsel` (X11) según lo disponible. Si ninguno
 
 ## Licencia
 
-Por definir.
+MIT — ver [LICENSE](LICENSE).
