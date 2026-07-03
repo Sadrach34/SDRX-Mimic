@@ -1,6 +1,7 @@
 pub mod extension_list;
 pub mod file_browser;
 pub mod home;
+pub mod images;
 pub mod layout;
 pub mod new_vault_dialog;
 pub mod preview;
@@ -8,3 +9,4 @@ pub mod settings;
 pub mod sidebar;
 pub mod tabs;
 pub mod theme_editor;
+pub mod wrap;

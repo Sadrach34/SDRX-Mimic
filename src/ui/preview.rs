@@ -17,9 +17,22 @@ pub struct PreviewCopyTarget {
     pub text: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct ImageSpec {
+    pub path: String,
+    pub alt: String,
+    /// Row index (into `RenderedMarkdown::lines`) of the first interior row
+    /// of the placeholder box, i.e. where the image content itself starts.
+    pub row: usize,
+    pub col_start: u16,
+    pub inner_width: u16,
+    pub inner_height: u16,
+}
+
 pub struct RenderedMarkdown {
     pub lines: Vec<Line<'static>>,
     pub copy_targets: Vec<PreviewCopyTarget>,
+    pub images: Vec<ImageSpec>,
 }
 
 pub struct MarkdownPreview<'a> {
@@ -57,13 +70,14 @@ pub fn render_markdown_with_targets(content: &str, width: usize, theme: &Theme) 
     let link_color = Theme::parse_color(&theme.link);
     let accent = Theme::parse_color(&theme.accent);
 
-    let raw = render_markdown(content, fg, header_color, link_color, accent);
-    wrap_lines(raw.lines, raw.copy_targets, width)
+    let raw = render_markdown(content, fg, header_color, link_color, accent, width);
+    wrap_lines(raw.lines, raw.copy_targets, raw.images, width)
 }
 
 struct RenderCtx {
     lines: Vec<Line<'static>>,
     copy_targets: Vec<PreviewCopyTarget>,
+    images: Vec<ImageSpec>,
     spans: Vec<Span<'static>>,
     style_stack: Vec<Style>,
     list_depth: usize,
@@ -71,9 +85,11 @@ struct RenderCtx {
     ordered_counter: Vec<u64>,
     in_code_block: bool,
     code_block_header_line: Option<usize>,
-    code_block_copy_end: Option<u16>,
     code_block_text: String,
     heading_level: Option<HeadingLevel>,
+    in_image: bool,
+    image_alt: String,
+    image_url: String,
     fg: Color,
 }
 
@@ -82,6 +98,7 @@ impl RenderCtx {
         Self {
             lines: Vec::new(),
             copy_targets: Vec::new(),
+            images: Vec::new(),
             spans: Vec::new(),
             style_stack: vec![Style::default().fg(fg)],
             list_depth: 0,
@@ -89,9 +106,11 @@ impl RenderCtx {
             ordered_counter: Vec::new(),
             in_code_block: false,
             code_block_header_line: None,
-            code_block_copy_end: None,
             code_block_text: String::new(),
             heading_level: None,
+            in_image: false,
+            image_alt: String::new(),
+            image_url: String::new(),
             fg,
         }
     }
@@ -149,42 +168,50 @@ impl RenderCtx {
     }
 }
 
-fn heading_line(text: &str, level: HeadingLevel, color: Color) -> Line<'static> {
-    let text = text.trim().to_string();
+// Paleta fija de mditor (charm.land/uict), independiente del Theme del
+// usuario: cada nivel de heading es un "badge" con fondo sólido en vez de
+// prefijo "#" + regla. Colores tomados 1:1 de internal/uict/colors.go (dark).
+fn heading_badge_colors(level: HeadingLevel) -> (Color, Color) {
     match level {
-        HeadingLevel::H1 => Line::from(vec![
-            Span::styled(
-                "# ",
-                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::DIM),
-            ),
-            Span::styled(
-                text,
-                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-            ),
-        ]),
-        HeadingLevel::H2 => Line::from(vec![
-            Span::styled(
-                "## ",
-                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::DIM),
-            ),
-            Span::styled(text, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-        ]),
-        HeadingLevel::H3 => Line::from(vec![
-            Span::styled(
-                "### ",
-                Style::default().fg(color).add_modifier(Modifier::DIM),
-            ),
-            Span::styled(
-                text,
-                Style::default().fg(color).add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            ),
-        ]),
-        HeadingLevel::H4 => Line::from(vec![
-            Span::styled("#### ", Style::default().fg(color).add_modifier(Modifier::DIM)),
-            Span::styled(text, Style::default().fg(color).add_modifier(Modifier::ITALIC)),
-        ]),
-        _ => Line::from(Span::styled(text, Style::default().fg(color))),
+        HeadingLevel::H1 => (Color::Rgb(0xF7, 0xF6, 0xFB), Color::Rgb(0xC2, 0x59, 0xFF)), // Salt / Violet
+        HeadingLevel::H2 => (Color::Rgb(0x20, 0x1F, 0x26), Color::Rgb(0x00, 0xA4, 0xFF)), // Pepper / Malibu
+        HeadingLevel::H3 => (Color::Rgb(0x20, 0x1F, 0x26), Color::Rgb(0x00, 0xFF, 0xB2)), // Pepper / Julep
+        HeadingLevel::H4 => (Color::Rgb(0xF7, 0xF6, 0xFB), Color::Rgb(0x6B, 0x50, 0xFF)), // Salt / Charple
+        HeadingLevel::H5 => (Color::Rgb(0xA2, 0xA0, 0xAD), Color::Rgb(0x3A, 0x39, 0x43)), // Steam / Char
+        _ => (Color::Rgb(0x85, 0x83, 0x92), Color::Rgb(0x2D, 0x2C, 0x36)),                // Squid / BBQ
     }
+}
+
+fn heading_line(text: &str, level: HeadingLevel, _color: Color) -> Line<'static> {
+    let mut text = text.trim().to_string();
+    if level == HeadingLevel::H1 {
+        text = text.to_uppercase();
+    }
+    let (fg, bg) = heading_badge_colors(level);
+    let mut style = Style::default().fg(fg).bg(bg);
+    style = match level {
+        HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 | HeadingLevel::H4 => {
+            style.add_modifier(Modifier::BOLD)
+        }
+        HeadingLevel::H6 => style.add_modifier(Modifier::DIM),
+        _ => style,
+    };
+    Line::from(Span::styled(format!(" {} ", text), style))
+}
+
+fn heading_rule(level: HeadingLevel, color: Color) -> Option<Line<'static>> {
+    let (ch, len) = match level {
+        HeadingLevel::H1 => ('═', 48),
+        HeadingLevel::H2 => ('─', 40),
+        HeadingLevel::H3 => ('╌', 34),
+        HeadingLevel::H4 => ('┄', 28),
+        HeadingLevel::H5 => ('┈', 22),
+        HeadingLevel::H6 => ('·', 16),
+    };
+    Some(Line::from(Span::styled(
+        ch.to_string().repeat(len),
+        Style::default().fg(color).add_modifier(Modifier::DIM),
+    )))
 }
 
 fn render_markdown(
@@ -193,6 +220,7 @@ fn render_markdown(
     header_color: Color,
     link_color: Color,
     accent: Color,
+    width: usize,
 ) -> RenderedMarkdown {
     let mut ctx = RenderCtx::new(fg);
     let opts = Options::all();
@@ -212,20 +240,8 @@ fn render_markdown(
                 let spans = std::mem::take(&mut ctx.spans);
                 let raw_text: String = spans.iter().map(|s| s.content.as_ref()).collect();
                 ctx.lines.push(heading_line(&raw_text, level, header_color));
-                match level {
-                    HeadingLevel::H1 => {
-                        ctx.lines.push(Line::from(Span::styled(
-                            "═".repeat(48),
-                            Style::default().fg(header_color).add_modifier(Modifier::DIM),
-                        )));
-                    }
-                    HeadingLevel::H2 => {
-                        ctx.lines.push(Line::from(Span::styled(
-                            "─".repeat(36),
-                            Style::default().fg(header_color).add_modifier(Modifier::DIM),
-                        )));
-                    }
-                    _ => {}
+                if let Some(rule) = heading_rule(level, header_color) {
+                    ctx.lines.push(rule);
                 }
                 ctx.blank();
                 ctx.heading_level = None;
@@ -312,26 +328,50 @@ fn render_markdown(
                 ctx.in_code_block = true;
                 ctx.flush_line();
                 let lang = match &kind {
-                    CodeBlockKind::Fenced(l) if !l.is_empty() => format!(" {} ", l),
+                    CodeBlockKind::Fenced(l) if !l.is_empty() => l.to_string(),
                     _ => String::new(),
                 };
-                let prefix = format!("┌─{}─ ", lang);
                 let copy_label = "[copy]";
+                let copy_style =
+                    Style::default().fg(link_color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+                let border = "┌".to_string();
+                let border_style = Style::default().fg(accent).add_modifier(Modifier::DIM);
+
+                let mut spans: Vec<Span<'static>> = vec![Span::styled(border.clone(), border_style)];
+                let mut left_len = border.chars().count();
+
+                if !lang.is_empty() {
+                    let badge_text = format!(" {} ", lang.to_uppercase());
+                    let badge_len = badge_text.chars().count();
+                    spans.push(Span::styled(
+                        badge_text,
+                        Style::default().fg(fg).bg(accent).add_modifier(Modifier::BOLD),
+                    ));
+                    left_len += badge_len;
+                }
+
+                let copy_len = copy_label.chars().count();
+                let inner_width = width.max(left_len + copy_len + 1);
+                let gap = inner_width.saturating_sub(left_len + copy_len).max(1);
+                spans.push(Span::styled(
+                    "─".repeat(gap.saturating_sub(1)),
+                    border_style,
+                ));
+                spans.push(Span::styled(" ", Style::default()));
+                let x_start = (left_len + gap) as u16;
+                let x_end = x_start + copy_len as u16;
+                spans.push(Span::styled(copy_label, copy_style));
+
                 let line_idx = ctx.lines.len();
-                let x_start = prefix.chars().count() as u16;
-                let x_end = x_start + copy_label.chars().count() as u16;
-                ctx.lines.push(Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        Style::default().fg(accent).add_modifier(Modifier::DIM),
-                    ),
-                    Span::styled(
-                        copy_label,
-                        Style::default().fg(link_color).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                    ),
-                ]));
+                ctx.lines.push(Line::from(spans));
                 ctx.code_block_header_line = Some(line_idx);
-                ctx.code_block_copy_end = Some(x_end);
+                ctx.copy_targets.push(PreviewCopyTarget {
+                    row: line_idx,
+                    x_start,
+                    x_end,
+                    text: String::new(),
+                });
                 ctx.code_block_text.clear();
                 ctx.push_style(Style::default().fg(accent).add_modifier(Modifier::DIM));
             }
@@ -340,31 +380,15 @@ fn render_markdown(
                 ctx.flush_line();
                 ctx.pop_style();
                 ctx.lines.push(Line::from(Span::styled(
-                    "└─",
+                    format!("└{}", "─".repeat(width.saturating_sub(1))),
                     Style::default().fg(accent).add_modifier(Modifier::DIM),
                 )));
                 if let Some(row) = ctx.code_block_header_line.take() {
-                    let x_end = ctx.code_block_copy_end.take().unwrap_or(0);
-                    ctx.copy_targets.push(PreviewCopyTarget {
-                        row,
-                        x_start: {
-                            // recompute from rendered header line to stay aligned
-                            let mut pos = 0u16;
-                            if let Some(line) = ctx.lines.get(row) {
-                                for span in &line.spans {
-                                    let s = span.content.as_ref();
-                                    if s == "[copy]" {
-                                        break;
-                                    }
-                                    pos += s.chars().count() as u16;
-                                }
-                            }
-                            pos
-                        },
-                        x_end,
-                        text: ctx.code_block_text.clone(),
-                    });
+                    if let Some(target) = ctx.copy_targets.iter_mut().rev().find(|t| t.row == row) {
+                        target.text = ctx.code_block_text.clone();
+                    }
                 }
+                ctx.code_block_header_line = None;
                 ctx.blank();
             }
 
@@ -378,9 +402,66 @@ fn render_markdown(
                 ctx.blank();
             }
 
+            // ── Images ─────────────────────────────────────────────────────
+            Event::Start(Tag::Image { dest_url, .. }) => {
+                ctx.flush_line();
+                ctx.in_image = true;
+                ctx.image_url = dest_url.to_string();
+                ctx.image_alt.clear();
+            }
+            Event::End(TagEnd::Image) => {
+                ctx.in_image = false;
+                // A tall/wide canvas here matters: the half-block renderer
+                // gets 2 vertical color samples per row, so a cramped box
+                // (previously a fixed 8 interior rows = 16px tall) looks
+                // like a smear no matter how good the source image is.
+                let box_w = width.clamp(10, 78);
+                let box_h: usize = 30;
+                let inner_w = box_w.saturating_sub(2);
+                let inner_h = box_h.saturating_sub(2);
+
+                let title = if ctx.image_alt.trim().is_empty() {
+                    std::path::Path::new(&ctx.image_url)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().to_string())
+                        .unwrap_or_else(|| ctx.image_url.clone())
+                } else {
+                    ctx.image_alt.clone()
+                };
+                let border_style = Style::default().fg(accent).add_modifier(Modifier::DIM);
+
+                ctx.lines.push(Line::from(Span::styled(
+                    format!("┌{}┐", pad_center(&format!(" {} ", title), inner_w, '─')),
+                    border_style,
+                )));
+                let interior_row = ctx.lines.len();
+                for _ in 0..inner_h {
+                    ctx.lines.push(Line::from(Span::styled(
+                        format!("│{}│", " ".repeat(inner_w)),
+                        border_style,
+                    )));
+                }
+                ctx.lines.push(Line::from(Span::styled(
+                    format!("└{}┘", "─".repeat(inner_w)),
+                    border_style,
+                )));
+
+                ctx.images.push(ImageSpec {
+                    path: ctx.image_url.clone(),
+                    alt: ctx.image_alt.clone(),
+                    row: interior_row,
+                    col_start: 1,
+                    inner_width: inner_w as u16,
+                    inner_height: inner_h as u16,
+                });
+                ctx.blank();
+            }
+
             // ── Text ───────────────────────────────────────────────────────
             Event::Text(text) => {
-                if ctx.in_code_block {
+                if ctx.in_image {
+                    ctx.image_alt.push_str(text.as_ref());
+                } else if ctx.in_code_block {
                     if !ctx.code_block_text.is_empty() {
                         ctx.code_block_text.push('\n');
                     }
@@ -435,32 +516,63 @@ fn render_markdown(
     RenderedMarkdown {
         lines: ctx.lines,
         copy_targets: ctx.copy_targets,
+        images: ctx.images,
     }
+}
+
+fn pad_center(s: &str, width: usize, fill: char) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        return s.chars().take(width).collect();
+    }
+    let total_pad = width - len;
+    let left = total_pad / 2;
+    let right = total_pad - left;
+    format!(
+        "{}{}{}",
+        fill.to_string().repeat(left),
+        s,
+        fill.to_string().repeat(right)
+    )
 }
 
 fn wrap_lines(
     lines: Vec<Line<'static>>,
     copy_targets: Vec<PreviewCopyTarget>,
+    images: Vec<ImageSpec>,
     width: usize,
 ) -> RenderedMarkdown {
     if width == 0 {
-        return RenderedMarkdown { lines, copy_targets };
+        return RenderedMarkdown { lines, copy_targets, images };
     }
     let mut target_by_row = std::collections::HashMap::new();
     for target in copy_targets {
         target_by_row.insert(target.row, target);
     }
 
+    // Image placeholder boxes (border + interior) must never be word-wrapped —
+    // every row they occupy is pushed through verbatim.
+    let mut protected_rows: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    for img in &images {
+        let top = img.row.saturating_sub(1);
+        let bottom = img.row + img.inner_height as usize;
+        for r in top..=bottom {
+            protected_rows.insert(r);
+        }
+    }
+    let mut image_row_remap: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+
     let mut result = Vec::new();
     let mut wrapped_targets = Vec::new();
     for (src_row, line) in lines.into_iter().enumerate() {
         let mut row_target = target_by_row.remove(&src_row);
-        if row_target.is_some() {
+        if row_target.is_some() || protected_rows.contains(&src_row) {
             let new_row = result.len();
             if let Some(mut t) = row_target.take() {
                 t.row = new_row;
                 wrapped_targets.push(t);
             }
+            image_row_remap.insert(src_row, new_row);
             result.push(line);
             continue;
         }
@@ -496,9 +608,20 @@ fn wrap_lines(
             start = next_start;
         }
     }
+    let wrapped_images = images
+        .into_iter()
+        .map(|mut img| {
+            if let Some(&new_row) = image_row_remap.get(&img.row) {
+                img.row = new_row;
+            }
+            img
+        })
+        .collect();
+
     RenderedMarkdown {
         lines: result,
         copy_targets: wrapped_targets,
+        images: wrapped_images,
     }
 }
 
